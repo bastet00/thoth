@@ -7,10 +7,10 @@
 # sources/ directory, so all paths should be relative to that
 # directory.
 # Add the font sources here once they exist, e.g.:
-#   - BastetHieroglyphs.glyphs   (or a .designspace with UFOs)
+#   - Thoth.glyphs   (or a .designspace with UFOs)
 sources: []
-# Working family name; change before the first release.
-familyName: "Bastet Hieroglyphs"
+# Family name shown to users.
+familyName: "Thoth"
 
 # Next you can supply alternative paths for where you want the
 # binaries to live. But we'd recommend you stick to the defaults

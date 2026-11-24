@@ -1,6 +1,8 @@
-# Bastet Fonts
+# Thoth
 
-Open-source fonts from the [Bastet](https://github.com/bastet00) project, starting with **Bastet Hieroglyphs** (working name): an Egyptian hieroglyph font that stacks and groups signs into quadrats.
+**Thoth** is an open-source Egyptian hieroglyph font from the [Bastet](https://github.com/bastet00) project that stacks and groups signs into quadrats.
+
+It is named after Thoth (Egyptian *ḏḥwtj*, Djehuty; Arabic تحوت), the god who in Egyptian belief gave people the hieroglyphic script. Google Fonts does not allow script names in a family name, so the name is just "Thoth".
 
 Status: **not started** – no font sources yet. CI skips the build until `sources/` contains a `.glyphs`, `.glyphspackage`, `.designspace` or `.ufo` file.
 
