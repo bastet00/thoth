@@ -13,8 +13,31 @@ on:
 permissions: {}
 
 jobs:
+  # Skip the build until real font sources exist in sources/.
+  check-sources:
+    name: Check for font sources
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_sources: ${{ steps.check.outputs.has_sources }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - id: check
+        run: |
+          if ls sources/*.glyphs sources/*.glyphspackage sources/*.designspace sources/*.ufo >/dev/null 2>&1; then
+            echo "has_sources=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_sources=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No font sources in sources/ yet; skipping build."
+          fi
+
   build:
     name: Build and test
+    needs: check-sources
+    if: ${{ needs.check-sources.outputs.has_sources == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read # check out the repository

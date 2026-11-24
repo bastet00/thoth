@@ -1,101 +1,49 @@
-## Setting up your font
+# Bastet Fonts
 
-### New repositories
+Open-source fonts from the [Bastet](https://github.com/bastet00) project, starting with **Bastet Hieroglyphs** (working name): an Egyptian hieroglyph font that stacks and groups signs into quadrats.
 
-1. Hit the green button above ("Use this template") to create your own repository.
+Status: **not started** – no font sources yet. CI skips the build until `sources/` contains a `.glyphs`, `.glyphspackage`, `.designspace` or `.ufo` file.
 
-2. Clone the repository, and replace the font sources in the `sources` directory with your own font sources. These sources may be either in Glyphs format or UFO/Designspace formats.\
-   \
-   Unlike many open source distributors, Google Fonts is **curated**. Fonts shipped to the platform have to match the [Google Fonts Specifications](https://github.com/googlefonts/gf-docs/tree/main/Spec). Please read them carefully.\
-   \
-   _(The sample font provided in this template is [Radio Canada](https://github.com/googlefonts/radiocanadadisplay/) by Charles Daoud, Etienne Aubert Bonn, Alexandre Saumier Demers and contributors.)_
+## What the font should do
 
-3. Then reference the sources in the file `sources/config.yaml`, as well as making any other changes you would like to make based on the instructions in the [Google Fonts Builder documentation](https://github.com/googlefonts/gftools/blob/main/Lib/gftools/builder/__init__.py).
+Unicode encodes hieroglyph layout with format controls (U+13430–U+1343F). The font has to contain the OpenType rules that turn them into a quadrat:
 
-4. Add yourself to the `AUTHORS.txt` and `CONTRIBUTORS.txt` files.
+| Control | Code point | Meaning |
+|---|---|---|
+| Vertical joiner | U+13430 | next sign goes under this one |
+| Horizontal joiner | U+13431 | signs side by side inside a group |
+| Insert at corners | U+13432–U+13435 | small sign tucked into a corner |
+| Overlay middle | U+13436 | signs drawn on top of each other |
+| Begin / end segment | U+13437 / U+13438 | brackets for nested groups |
+| Insert at middle/top/bottom, mirror, damage, … | U+13439–U+1345F | Unicode 15 extensions |
 
-5. Fill out `documentation/ARTICLE.en_us.html` with a description of your font.
+Example: `𓂋` U+13430 `𓈖` should render as 𓂋 above 𓈖 in one group.
 
-6. Rewrite this Readme file according to the recommendations in the [Google Fonts Guide](https://googlefonts.github.io/gf-guide/readmefile.html).
+## Where it will be used
 
-7. Add and commit these files to git.
-
-8. **At the command line, run `make customize` to ensure that all the paths and URLs in your project are correct**. This will also push your changes to GitHub.
-
-9. **Set up your GitHub pages site**: go to your repository's Settings > Pages and ensure that the Build and deployment "Source" drop-down is set to "GitHub Actions". (Any preexisting Actions jobs can be re-run to publish now, or the deployment triggered also manually from the Actions tab. Subsequent commits will publish the proofs and QA results automatically.)
-
-10. If GitHub Actions has successfully built the family, you will find the font binaries in the Actions tab. The official GitHub Actions documentation provides further [information](https://docs.github.com/en/actions/managing-workflow-runs/downloading-workflow-artifacts).
-
-### Updating a repository
-
-1. To update your font repository to bring in the latest best-practices from the Google Fonts Project Template, run `make update-project-template` from the command line. This requires the `node` Javascript engine to be installed; if you don't have that already, [follow these instructions](https://nodejs.org/en/download/package-manager#macos) to install on your platform.
-
-2. To update the Python build chain which builds your fonts, run `make update` and `git add`/`git commit` the new `requirements.txt`.
-
-## More things to do
-
-- `CustomFilter_GF_Latin_All.plist` in `sources` is practical if you use GlyphsApp, you can remove it otherwise. Placed in the same directory as the your `.glyphs` file, it will allow Glyphs to display a filter list for all GF Latin glyphsets in app. To make sure your font supports the minimal set required by Google Fonts, look at the `GF_Latin_Core` filter list. Find other glyphsets and list formats for different software in [GF Glyphsets repository](https://github.com/googlefonts/glyphsets/tree/main/GF_glyphsets).
-
-- Once you are happy with your font, add promotional assets in the documentation directory. Make it different from the pic you use in this README. You can get inspired by existing @googlefonts posts as: https://x.com/googlefonts/status/1415562928657416192.
-
-- Google Fonts uses GitHub Releases to manage font families. If you feel your font project has hit a milestone, you must create a new release for it. In order to do this, go to the releases page and hit the "Draft a new release" button. You must provide a tag number and title which can only be a decimal number e.g. `0.100`, `1.000` etc. For the body text, mention what has changed since the last release. Once you are done, hit the "Publish release" button. Here is an example which fulfills the requirements, https://github.com/m4rc1e/test-ufr-family/releases/tag/2.019. For more info regarding GitHub release, please see the official GitHub Release [documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository). **Please note that GitHub Actions must be able to build the fonts before you can make a release. Once you have made a release, the fonts and tests assets will be attached to the release automatically. This may take a while since the fonts and tests will be built from scratch so please be patient.**
-
----
-
-# My Font
-
-[![][Fontspector]](https://googlefonts.github.io/googlefonts-project-template/fontspector/fontspector-report.html)
-[![][OpenType]](https://googlefonts.github.io/googlefonts-project-template/fontspector/fontspector-report.html)
-[![][Universal]](https://googlefonts.github.io/googlefonts-project-template/fontspector/fontspector-report.html)
-[![][Google Fonts]](https://googlefonts.github.io/googlefonts-project-template/fontspector/fontspector-report.html)
-[![][Glyphset]](https://googlefonts.github.io/googlefonts-project-template/fontspector/fontspector-report.html)
-
-[Fontspector]: https://img.shields.io/endpoint?url=https%3A%2F%2Fgooglefonts.github.io%2Fgooglefonts-project-template%2Fbadges%2FFontspectorQA.json
-[OpenType]: https://img.shields.io/endpoint?url=https%3A%2F%2Fgooglefonts.github.io%2Fgooglefonts-project-template%2Fbadges%2FOpentypeSpecificationChecks.json
-[Universal]: https://img.shields.io/endpoint?url=https%3A%2F%2Fgooglefonts.github.io%2Fgooglefonts-project-template%2Fbadges%2FUniversalProfileChecks.json
-[Google Fonts]: https://img.shields.io/endpoint?url=https%3A%2F%2Fgooglefonts.github.io%2Fgooglefonts-project-template%2Fbadges%2FFontFileChecks.json
-[Outline Correctness]: https://img.shields.io/endpoint?url=https%3A%2F%2Fgooglefonts.github.io%2Fgooglefonts-project-template%2Fbadges%2FOutlineCorrectnessChecks.json
-[Glyphset]: https://img.shields.io/endpoint?url=https%3A%2F%2Fgooglefonts.github.io%2Fgooglefonts-project-template%2Fbadges%2FGlyphsetChecks.json
-
-Description of your font goes here. We recommend to start with a very short presentation line (the kind you would use on twitter to present your project for example), and then add as much details as necesary :-) Origin of the project, idea of usage, concept of creation… but also number of masters, axes, character sets, etc.
-
-Don't hesitate to create images!
-
-![Sample Image](documentation/image1.png)
-![Sample Image](documentation/image2.png)
-
-## About
-
-Description of you and/or organisation goes here.
+- **bastet-app** (Flutter, Android + iOS): bundled in `assets/fonts/`, so every user gets it with an app update. Flutter shapes text itself, so it does not depend on fonts installed on the phone.
+- **bastet-website**: loaded with `@font-face`, so every visitor gets it.
+- **simple-keyboard-hiero** (Android): can show stacked groups on the keys. Text typed into other apps still uses that app's own font.
 
 ## Building
 
-Fonts are built automatically by GitHub Actions — take a look in the "Actions" tab for the latest build.
+This repository follows the [Google Fonts project template](https://github.com/googlefonts/googlefonts-project-template), so it can later be submitted to Google Fonts.
 
-If you want to build fonts manually on your own computer:
+```bash
+make build   # builds into fonts/ with gftools builder
+make test    # runs fontspector with the Google Fonts profile
+make proof   # HTML proofs in out/proof
+```
 
-- `make build` will produce font files.
-- `make test` will run [Fontspector](https://fonttools.github.io/fontspector/)'s quality assurance tests.
-- `make proof` will generate HTML proof files.
+Sources go in `sources/` and are listed in `sources/config.yaml`. Built fonts are not committed; GitHub Actions builds them, and tagged releases (e.g. `0.100`) get a zip attached.
 
-The proof files and QA tests are also available automatically via GitHub Actions — look at `https://yourname.github.io/your-font-repository-name`.
+## Road to Google Fonts
 
-## Changelog
-
-When you update your font (new version or new release), please report all notable changes here, with a date.
-[Font Versioning](https://github.com/googlefonts/gf-docs/tree/main/Spec#font-versioning) is based on semver.
-Changelog example:
-
-**26 May 2021. Version 2.13**
-
-- MAJOR Font turned to a variable font.
-- SIGNIFICANT New Stylistic sets added.
+1. Draw the signs (or start from an existing OFL hieroglyph font, keeping its copyright lines) and write the quadrat rules.
+2. Get `make build` and `make test` passing in CI.
+3. Make the repository public and tag a release.
+4. Open an "Add font" issue at [google/fonts](https://github.com/google/fonts/issues).
 
 ## License
 
-This Font Software is licensed under the SIL Open Font License, Version 1.1.
-This license is available with a FAQ at https://openfontlicense.org
-
-## Repository Layout
-
-This font repository structure is inspired by [Unified Font Repository v0.3](https://github.com/unified-font-repository/Unified-Font-Repository), modified for the Google Fonts workflow.
+[SIL Open Font License 1.1](OFL.txt). Google Fonts accepts only OFL fonts and does not allow a Reserved Font Name, so don't add one.
