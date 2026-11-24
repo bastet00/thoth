@@ -4,7 +4,7 @@
 
 It is named after Thoth (Egyptian *ḏḥwtj*, Djehuty; Arabic تحوت), the god who in Egyptian belief gave people the hieroglyphic script. Google Fonts does not allow script names in a family name, so the name is just "Thoth".
 
-Status: **not started** – no font sources yet. CI skips the build until `sources/` contains a `.glyphs`, `.glyphspackage`, `.designspace` or `.ufo` file.
+Status: **work in progress** – the font builds and contains the signs, imported from Noto Sans Egyptian Hieroglyphs (see [Credits](#credits)). It does not stack signs yet; the quadrat rules are the next step.
 
 ## What the font should do
 
@@ -37,14 +37,18 @@ make test    # runs fontspector with the Google Fonts profile
 make proof   # HTML proofs in out/proof
 ```
 
-Sources go in `sources/` and are listed in `sources/config.yaml`. Built fonts are not committed; GitHub Actions builds them, and tagged releases (e.g. `0.100`) get a zip attached.
+The source is `sources/Thoth-Regular.ufo`, listed in `sources/config.yaml`. The font is a static TTF and stays unhinted. Built fonts are not committed; GitHub Actions builds them, and tagged releases (e.g. `0.100`) get a zip attached.
 
 ## Road to Google Fonts
 
-1. Draw the signs (or start from an existing OFL hieroglyph font, keeping its copyright lines) and write the quadrat rules.
+1. Write the quadrat rules.
 2. Get `make build` and `make test` passing in CI.
 3. Make the repository public and tag a release.
 4. Open an "Add font" issue at [google/fonts](https://github.com/google/fonts/issues).
+
+## Credits
+
+The sign outlines come from [Noto Sans Egyptian Hieroglyphs](https://github.com/notofonts/egyptian-hieroglyphs), designed by the Monotype Design Team for the Noto project and published under the SIL Open Font License (imported at commit `209775d`). Its copyright notice is kept in `OFL.txt` and in the font.
 
 ## License
 

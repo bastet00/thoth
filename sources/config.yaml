@@ -6,9 +6,8 @@
 # all sources in the same family. These are expected to be in the
 # sources/ directory, so all paths should be relative to that
 # directory.
-# Add the font sources here once they exist, e.g.:
-#   - Thoth.glyphs   (or a .designspace with UFOs)
-sources: []
+sources:
+  - Thoth-Regular.ufo
 # Family name shown to users.
 familyName: "Thoth"
 
@@ -23,7 +22,7 @@ familyName: "Thoth"
 # woffDir: $outputDir/webfonts
 
 # The following entries, which are either "true" or "false"
-# determine which targets to build. We turn off OTFs for this demo.
+# determine which targets to build. Thoth is a static TTF only.
 
 # buildVariable: true
 # buildStatic: true
@@ -31,10 +30,9 @@ familyName: "Thoth"
 buildOTF: false
 # buildSmallCap: false
 
-# The next flags control autohinting.
-# autohintTTF: true
+# The next flags control autohinting. Thoth is unhinted.
+autohintTTF: false
 # autohintOTF: false
-ttfaUseScript: true  # not a Latin font
 
 # The "fix" operation can optionally fix some problems which
 # are better dealt with in the font sources. Set this to true if you

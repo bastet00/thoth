@@ -7,3 +7,4 @@
 
 
 Amro Abdalla
+The Noto Project Authors (https://github.com/notofonts/egyptian-hieroglyphs)

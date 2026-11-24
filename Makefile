@@ -1,7 +1,7 @@
 SOURCES=$(shell python3 scripts/read-config.py --sources )
 FAMILY=$(shell python3 scripts/read-config.py --family )
-DRAWBOT_SCRIPTS=$(shell ls documentation/*.py)
-DRAWBOT_OUTPUT=$(shell ls documentation/*.py | sed 's/\.py/.png/g')
+DRAWBOT_SCRIPTS=$(wildcard documentation/*.py)
+DRAWBOT_OUTPUT=$(patsubst %.py,%.png,$(DRAWBOT_SCRIPTS))
 
 help:
 	@echo "###"
@@ -18,10 +18,7 @@ build: build.stamp
 
 venv: venv/touchfile
 
-customize: venv
-	. venv/bin/activate; python3 scripts/customize.py
-
-build.stamp: venv sources/config.yaml $(SOURCES)
+build.stamp: venv sources/config.yaml $(SOURCES) $(shell find $(SOURCES))
 	rm -rf fonts
 	(for config in sources/config*.yaml; do . venv/bin/activate; gftools builder $$config; done)  && touch build.stamp
 
