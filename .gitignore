@@ -11,6 +11,7 @@ package.json
 master_ufo
 instance_ufos
 subset-files
+sources/build/
 .ninja_log
 build.ninja
 

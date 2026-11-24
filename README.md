@@ -4,7 +4,7 @@
 
 It is named after Thoth (Egyptian *ḏḥwtj*, Djehuty; Arabic تحوت), the god who in Egyptian belief gave people the hieroglyphic script. Google Fonts does not allow script names in a family name, so the name is just "Thoth".
 
-Status: **work in progress** – the font builds and contains the signs, imported from Noto Sans Egyptian Hieroglyphs (see [Credits](#credits)). It does not stack signs yet; the quadrat rules are the next step.
+Status: **work in progress** – the font builds and contains the signs, imported from Noto Sans Egyptian Hieroglyphs, and the Latin letters for Egyptological transliteration (ꜣ ꜥ ḥ ḫ ẖ š ṯ ḏ and the rest), taken from Noto Sans (see [Credits](#credits)). It does not stack signs yet; the quadrat rules are the next step.
 
 ## What the font should do
 
@@ -32,12 +32,17 @@ Example: `𓂋` U+13430 `𓈖` should render as 𓂋 above 𓈖 in one group.
 This repository follows the [Google Fonts project template](https://github.com/googlefonts/googlefonts-project-template), so it can later be submitted to Google Fonts.
 
 ```bash
-make build   # builds into fonts/ with gftools builder
-make test    # runs fontspector with the Google Fonts profile
+make build   # builds into fonts/ (runs sources/build.sh inside the virtual environment)
+make test    # runs the shaping test, then fontspector with the Google Fonts profile
 make proof   # HTML proofs in out/proof
 ```
 
-The source is `sources/Thoth-Regular.ufo`, listed in `sources/config.yaml`. The font is a static TTF and stays unhinted. Built fonts are not committed; GitHub Actions builds them, and tagged releases (e.g. `0.100`) get a zip attached.
+The only hand-edited font source is `sources/Thoth-Regular.ufo`. `sources/build.sh` is the one build command, in two steps:
+
+1. The generator in `scripts/stack` reads the source and writes the font that gets compiled to `sources/build/` (not committed). For now it adds a fallback glyph for the format controls and the glyph classes; the quadrat rules will be generated here.
+2. `gftools builder` compiles it as set up in `sources/config.yaml`, and adds the Latin letters from a tagged Noto Sans release, which it downloads on the first build.
+
+`tests/test_shaping.py` shapes text with HarfBuzz and checks the result. The font is a static TTF and stays unhinted. Built fonts are not committed; GitHub Actions builds them, and tagged releases (e.g. `0.100`) get a zip attached.
 
 ## Road to Google Fonts
 
@@ -48,7 +53,7 @@ The source is `sources/Thoth-Regular.ufo`, listed in `sources/config.yaml`. The 
 
 ## Credits
 
-The sign outlines come from [Noto Sans Egyptian Hieroglyphs](https://github.com/notofonts/egyptian-hieroglyphs), designed by the Monotype Design Team for the Noto project and published under the SIL Open Font License (imported at commit `209775d`). Its copyright notice is kept in `OFL.txt` and in the font.
+The sign outlines come from [Noto Sans Egyptian Hieroglyphs](https://github.com/notofonts/egyptian-hieroglyphs), designed by the Monotype Design Team for the Noto project and published under the SIL Open Font License (imported at commit `209775d`). The Latin letters, combining marks and brackets for transliteration come from [Noto Sans](https://github.com/notofonts/latin-greek-cyrillic) (release `NotoSans-v2.015`), also under the SIL Open Font License. Both copyright notices are kept in `OFL.txt` and in the font.
 
 ## License
 

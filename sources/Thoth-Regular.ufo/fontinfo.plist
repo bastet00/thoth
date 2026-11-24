@@ -5,9 +5,9 @@
     <key>ascender</key>
     <integer>1001</integer>
     <key>capHeight</key>
-    <integer>900</integer>
+    <integer>714</integer>
     <key>copyright</key>
-    <string>Copyright 2026 The Thoth Project Authors (https://github.com/bastet00/thoth). Copyright 2022 The Noto Project Authors (https://github.com/notofonts/egyptian-hieroglyphs)</string>
+    <string>Copyright 2026 The Thoth Project Authors (https://github.com/bastet00/thoth). Copyright 2022 The Noto Project Authors (https://github.com/notofonts/egyptian-hieroglyphs). Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)</string>
     <key>descender</key>
     <integer>-138</integer>
     <key>familyName</key>
@@ -23,7 +23,7 @@
     <key>openTypeHheaLineGap</key>
     <integer>0</integer>
     <key>openTypeNameDescription</key>
-    <string>Based on Noto Sans Egyptian Hieroglyphs by the Monotype Design Team.</string>
+    <string>Based on Noto Sans Egyptian Hieroglyphs and Noto Sans by the Monotype Design Team.</string>
     <key>openTypeNameDesigner</key>
     <string>Amro Abdalla, Monotype Design Team</string>
     <key>openTypeNameDesignerURL</key>

@@ -62,9 +62,8 @@ jobs:
 
       - name: Build font
         run: make build
-      - name: Check with fontspector
+      - name: Test (shaping + fontspector)
         run: make test
-        continue-on-error: true
       - name: Generate proofs
         run: make proof
       - name: Set up test result site
@@ -75,6 +74,7 @@ jobs:
         with:
           path: ./out
       - name: Archive artifacts
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: ${{ env.ZIP_NAME }}

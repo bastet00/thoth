@@ -6,8 +6,10 @@
 # all sources in the same family. These are expected to be in the
 # sources/ directory, so all paths should be relative to that
 # directory.
+# The hand-edited source is Thoth-Regular.ufo. sources/build.sh generates
+# build/ from it (see scripts/stack) and then runs the builder.
 sources:
-  - Thoth-Regular.ufo
+  - build/Thoth.designspace
 # Family name shown to users.
 familyName: "Thoth"
 
@@ -52,3 +54,54 @@ autohintTTF: false
 # extraVariableFontmakeArgs: ""
 # extraStaticFontmakeArgs: ""
 # glyphData: GlyphData.xml
+
+# Latin letters for Egyptological transliteration, taken from a tagged
+# release of Noto Sans: basic Latin plus the letters, combining marks and
+# editorial brackets that transliteration needs.
+includeSubsets:
+  - from:
+      repo: notofonts/latin-greek-cyrillic@NotoSans-v2.015
+      path: sources/NotoSans.glyphspackage
+    name: GF_Latin_Core
+  - from:
+      repo: notofonts/latin-greek-cyrillic@NotoSans-v2.015
+      path: sources/NotoSans.glyphspackage
+    ranges:
+      - start: 0x00EF # ï
+        end: 0x00EF
+      - start: 0x0131 # ı
+        end: 0x0131
+      - start: 0x015A # Ś ś
+        end: 0x015B
+      - start: 0x0160 # Š š
+        end: 0x0161
+      - start: 0x02BE # ʾ ʿ
+        end: 0x02BF
+      - start: 0x032E # combining breve below, inverted breve below
+        end: 0x032F
+      - start: 0x0331 # combining macron below
+        end: 0x0331
+      - start: 0x0357 # combining right half ring above
+        end: 0x0357
+      - start: 0x1E0E # Ḏ ḏ
+        end: 0x1E0F
+      - start: 0x1E24 # Ḥ ḥ
+        end: 0x1E25
+      - start: 0x1E2A # Ḫ ḫ
+        end: 0x1E2B
+      - start: 0x1E32 # Ḳ ḳ
+        end: 0x1E33
+      - start: 0x1E6E # Ṯ ṯ Ṱ ṱ
+        end: 0x1E71
+      - start: 0x1E96 # ẖ
+        end: 0x1E96
+      - start: 0x2E17 # ⸗
+        end: 0x2E17
+      - start: 0x2E22 # ⸢ ⸣
+        end: 0x2E23
+      - start: 0x2E2E # ⸮
+        end: 0x2E2E
+      - start: 0xA722 # Ꜣ ꜣ Ꜥ ꜥ
+        end: 0xA725
+      - start: 0xA7BC # Ꞽ ꞽ
+        end: 0xA7BD

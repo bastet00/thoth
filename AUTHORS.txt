@@ -8,3 +8,4 @@
 
 Amro Abdalla
 The Noto Project Authors (https://github.com/notofonts/egyptian-hieroglyphs)
+The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
