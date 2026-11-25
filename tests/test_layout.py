@@ -731,6 +731,10 @@ AUTOMATIC = [
     ([R4, X1, Q3, O34, I9], [R4, X1, Q3, O34, I9]),  # ḥtp is a whole word; after Q3 the run stays
     ([F35, I9, D21, N35, SPACE, N35, N35], [F35, I9, V, D21, N35, SPACE, N35, V, N35]),
     ([N41, X1, B1], [N41, V, X1, B1]),
+    # the owner, 2026-11-25: ḥtp keeps its p in the block inside a name too
+    # (Ptahhotep: p over t, ḥ, the altar over t and p, the man)
+    ([Q3, X1, 0x1339B, R4, X1, Q3, A1], [Q3, V, X1, 0x1339B, R4, V, X1, H, Q3, A1]),
+    ([R4, X1, Q3, A1], [R4, V, X1, H, Q3, A1]),
     ([F32, D21, D46, G43, A17, Z2], [F32, V, D21, D46, G43, A17, Z2]),
     ([D21, AA1, Y1, V31], [D21, V, AA1, Y1, V31]),
     # explicit controls win; ZWNJ and a space keep signs apart
