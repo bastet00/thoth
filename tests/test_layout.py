@@ -661,6 +661,9 @@ def test_random(signs):
 
 TE = L.TOP_END
 S34, ZWNJ, ZWJ, SPACE = 0x132F9, 0x200C, 0x200D, 0x20
+O34, D19, A2, AA1, G43 = 0x13283, 0x13089, 0x13001, 0x1340D, 0x13171  # bolt, nose, man, placenta, quail chick
+N37, Y1, V31, F32, D46, A17 = 0x13219, 0x133DB, 0x133A1, 0x13121, 0x130A7, 0x13014
+D36, N41 = 0x1309D, 0x1321E  # arm, well
 
 # Plain text, and the text with controls that it must lay out as.
 AUTOMATIC = [
@@ -684,9 +687,10 @@ AUTOMATIC = [
     ([R4, X1, Q3, H, Z1], [R4, X1, Q3, H, Z1]),
     ([F35, I9, V, D21, SPACE, R4, X1, Q3], [F35, I9, V, D21, SPACE, R4, V, X1, H, Q3]),
     # a word typed right after a group, with no space, does not begin a word:
-    # rn (a whole word only) stays apart there; ḥtp also holds where a word
+    # rn (a whole word only) is not taken from the list there, but its two
+    # half-block signs stack by shape (rule A8); ḥtp also holds where a word
     # ends, so it stacks
-    ([F35, I9, V, D21, D21, N35], [F35, I9, V, D21, D21, N35]),
+    ([F35, I9, V, D21, D21, N35], [F35, I9, V, D21, D21, V, N35]),
     ([F35, I9, V, D21, R4, X1, Q3], [F35, I9, V, D21, R4, V, X1, H, Q3]),
     # inside a run without spaces: nfr holds where a word ends, rn.f too
     ([M17, X1, F35, I9, D21], [M17, X1, F35, I9, V, D21]),
@@ -700,6 +704,43 @@ AUTOMATIC = [
     ([G1, X1, N35], [G1, X1, N35]),
     ([G17, X1, SPACE, G39, Z1, D21], [G17, TE, X1, SPACE, G39, Z1, D21]),
     ([G14, TE, X1, D21, N35], [G14, TE, X1, D21, N35]),
+    # the shape rule (A7 to A9): two half-block signs in a row, one above the
+    # other. The owner's two cases: O34 I9 D19 A2 is the bolt over the viper,
+    # then the nose and the man; the dictionary word of his screenshot, O34
+    # I9 Aa1 G43 and seven strokes, the same pair and the rest as it is
+    ([O34, I9, D19, A2], [O34, V, I9, D19, A2]),
+    ([O34, I9, AA1, G43, *[Z1] * 7], [O34, V, I9, AA1, G43, *[Z1] * 7]),
+    ([O34, I9, N37], [O34, V, I9, N37]),  # three: a pair and a lone sign
+    ([O34, I9, N37, Y1], [O34, V, I9, N37, V, Y1]),  # four: two pairs
+    ([N35, N35], [N35, V, N35]),  # a sign doubled is a pair like any other
+    ([N35, N35, N35], [N35, V, N35, N35]),  # tripled: a pair and a lone sign
+    ([Z2, D21], [Z2, V, D21]),  # the plural strokes are wide: a half-block sign
+    ([A1, O34, I9, A1], [A1, O34, V, I9, A1]),  # between tall signs
+    # not half-block: narrow low signs, low and tall, two tall wide signs
+    ([X1, Z1], [X1, Z1]), ([Q3, X1], [Q3, X1]), ([Z4, X1], [Z4, X1]),
+    ([D21, A1], [D21, A1]), ([A1, D21], [A1, D21]), ([G43, G43], [G43, G43]),
+    ([X1, N35], [X1, N35]), ([AA1, D21], [AA1, D21]),
+    # a run right after a lower sign that is not taken stays as it is (p over n)
+    ([Q3, N35, D36], [Q3, N35, D36]),
+    ([X1, O34, I9, N37], [X1, O34, I9, N37]),
+    ([D19, O34, I9], [D19, O34, I9]),
+    ([A2, O34, I9], [A2, O34, V, I9]),  # after a full-height sign it stacks
+    # the word list wins: its entries take their signs first (ḥtp, nfr, the
+    # owner's ḥjmt), also where they keep two half-block signs apart
+    ([R4, X1, Q3, SPACE, O34, I9], [R4, V, X1, H, Q3, SPACE, O34, V, I9]),
+    ([R4, X1, Q3, O34, I9], [R4, X1, Q3, O34, I9]),  # ḥtp is a whole word; after Q3 the run stays
+    ([F35, I9, D21, N35, SPACE, N35, N35], [F35, I9, V, D21, N35, SPACE, N35, V, N35]),
+    ([N41, X1, B1], [N41, V, X1, B1]),
+    ([F32, D21, D46, G43, A17, Z2], [F32, V, D21, D46, G43, A17, Z2]),
+    ([D21, AA1, Y1, V31], [D21, V, AA1, Y1, V31]),
+    # explicit controls win; ZWNJ and a space keep signs apart
+    ([F35, V, O34, I9, N37], [F35, V, O34, I9, V, N37]),  # nothing starts right after a control
+    ([O34, I9, V, N35], [O34, I9, V, N35]),  # a block reaching a control is not formed
+    ([O34, I9, N37, H, X1], [O34, V, I9, N37, H, X1]),
+    ([O34, H, I9], [O34, H, I9]),
+    ([O34, ZWNJ, I9], [O34, ZWNJ, I9]),
+    ([O34, SPACE, I9], [O34, SPACE, I9]),
+    ([O34, ZWNJ, I9, N37], [O34, ZWNJ, I9, V, N37]),
 ]
 
 
@@ -755,8 +796,36 @@ def test_automatic(signs):
         check([once[i] for i in kept] == text and all(once[i] in L.CONTROLS for i in range(len(once))
                                                       if i not in kept), f"{label(text)}: characters changed")
         check_visible(once, signs)
+    # the shape rule (A7 to A9): the owner's case as numbers, the class of
+    # half-block signs, and random plain text rich in half-block signs
+    found = [(c.advance, list(c.glyphs)) for c in L.layout([O34, I9, D19, A2], signs, table)]
+    check(found == [(1324, [(O34, 2, 748, 0, 0.973), (I9, 7, 108, 0, 0.872)]), (794, [(D19, 0, 0, 0, 1.0)]),
+                    (859, [(A2, 0, 0, 0, 1.0)])], f"O34 I9 D19 A2: {found}")
+    half = [c for c in sorted(signs) if L.half_block(c, signs)]
+    check(len(half) == 157 and all(c in L.HIEROGLYPHS and signs[c].cell[1] <= 6 and signs[c].cell[0] >= 14
+                                   for c in half), f"{len(half)} half-block signs")
+    check(all(L.fit_level(*L.measure(((a,), (b,)), signs)[:2]) == 0 for a in half[::7] for b in half[::5]),
+          "a pair of half-block signs is not at level 0")
+    lower = [c for c in sorted(signs) if c not in half and signs[c].cell[1] < L.HEIGHT_LIMIT]
+    tall = [c for c in sorted(signs) if signs[c].cell[1] >= L.HEIGHT_LIMIT]
+    pairs = 0
+    for _ in range(1500):
+        text = []
+        for _ in range(rng.randint(1, 12)):
+            r = rng.random()
+            text.append(rng.choice(half) if r < 0.6 else rng.choice(lower) if r < 0.72 else rng.choice(tall)
+                        if r < 0.82 else rng.choice(known) if r < 0.9 else rng.choice(others))
+        once, origin = L.automatic(text, table)
+        check(once == L.automatic(list(text), table)[0], f"{label(text)}: not deterministic")
+        check_visible(once, signs)
+        alone, origin = L.automatic(text, {})  # the shape rule alone: blocks of two half-block signs
+        implied = [i for i in range(1, len(alone)) if origin[i] == origin[i - 1]]
+        check(all(alone[i] == V and L.half_block(alone[i - 1], signs) and L.half_block(alone[i + 1], signs)
+                  and i + 2 not in implied for i in implied), f"{label(text)}: {label(alone)}")
+        pairs += len(implied)
+    check(pairs > 500, f"random half-block text formed only {pairs} pairs")
     print(f"  automatic: {len(table)} entries, {stacked} groups when typed as words, "
-          f"{len(AUTOMATIC)} golden texts")
+          f"{len(AUTOMATIC)} golden texts; shape rule: {len(half)} half-block signs, {pairs} pairs in random text")
 
 
 def main():

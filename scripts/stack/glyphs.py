@@ -432,24 +432,30 @@ class Automatic:
     All are empty marks: a word start and a word end (rule A2) put before
     and after the signs of a stretch where it begins or ends a word; a slot
     between every two signs of a stretch; an implied control, one per
-    control the table uses, which a slot becomes and which becomes the
-    control itself once rule A5 has been checked; and an empty glyph that
-    an implied control becomes where rule A5 keeps its block from forming.
+    control the table and the shape rule (A8, the vertical joiner) use,
+    which a slot becomes and which becomes the control itself once rule A5
+    has been checked; an empty glyph that an implied control becomes where
+    rule A5 keeps its block from forming; an inner slot, which a slot
+    inside an entry becomes where the entry joins nothing (so the shape
+    rule knows the signs are taken); and a kept slot, which a slot inside
+    a run of half-block signs becomes where the run stays as it is (A8).
     """
 
     start, end, slot, null = "auto.start", "auto.end", "auto.slot", "auto.null"
+    inner, kept = "auto.inner", "auto.kept"
 
     def __init__(self, table):
         self.table = table  # layout.automatic_table()
         self.controls = sorted({c for arrangement in table.values() for block in arrangement
-                                for c in block if not L.is_sign(c)})
+                                for c in block if not L.is_sign(c)} | {L.VERTICAL_JOINER})
 
     @staticmethod
     def join(control):  # an implied control
         return f"auto.{control_name(control)}"
 
     def markers(self):
-        return [self.start, self.end, self.slot, self.null] + [self.join(c) for c in self.controls]
+        return ([self.start, self.end, self.slot, self.null, self.inner, self.kept]
+                + [self.join(c) for c in self.controls])
 
 
 def add_automatic(font, automatic):

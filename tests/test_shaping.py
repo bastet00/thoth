@@ -53,10 +53,11 @@ NAMES = glyphs.Names(SIGNS, SOURCE)
 V, H = L.VERTICAL_JOINER, L.HORIZONTAL_JOINER
 FALLBACK = "control.fallback"
 
-# Limits for the budget test, set from the build with the automatic layer
-# and its own-word table (12,602 glyphs, 1,213,564 bytes TTF, 435,152 bytes
-# WOFF2; without the layer 12,594, 1,184,664 and 427,992; without corner
-# insertion 12,398, 1,083,928 and 392,620) with a little room.
+# Limits for the budget test, set from the build with the automatic layer,
+# its own-word table and the shape rule (12,604 glyphs, 1,215,360 bytes TTF,
+# 436,216 bytes WOFF2; without the shape rule 12,602, 1,213,596 and 434,888;
+# without the layer 12,594, 1,184,664 and 427,992; without corner insertion
+# 12,398, 1,083,928 and 392,620) with a little room.
 MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 12_750, 1_230_000, 445_000
 
 # Egyptological transliteration, beyond the basic Latin set.
@@ -651,7 +652,7 @@ def test_insertion(shaper):
 
 
 def test_automatic(shaper):
-    """The automatic layer (layout rules A1 to A6): plain text comes out as
+    """The automatic layer (layout rules A1 to A9): plain text comes out as
     layout.py lays it out with the table, every entry of the table and
     seeded random plain text, next to spaces, ZWNJ and controls; with calt
     switched off, as layout.py without the table."""
@@ -672,19 +673,42 @@ def test_automatic(shaper):
         texts.append(text)
     for words in range(300):  # running text: entries without spaces
         texts.append([c for _ in range(rng.randint(2, 6)) for c in rng.choice(entries)])
+    # the shape rule (A7 to A9): plain text rich in half-block signs, next to
+    # lower and tall signs, list words, spaces, ZWNJ and controls
+    half = [c for c in signs if L.half_block(c, SIGNS)]
+    lower = [c for c in signs if c not in half and SIGNS[c].cell[1] < L.HEIGHT_LIMIT]
+    tall = [c for c in signs if SIGNS[c].cell[1] >= L.HEIGHT_LIMIT]
+    shape_rng = random.Random(23)
+    for _ in range(2000):
+        text = []
+        for _ in range(shape_rng.randint(2, 12)):
+            r = shape_rng.random()
+            text.append(shape_rng.choice(half) if r < 0.6 else shape_rng.choice(lower) if r < 0.72
+                        else shape_rng.choice(tall) if r < 0.8 else shape_rng.choice(known) if r < 0.9
+                        else shape_rng.choice(separators))
+        texts.append(text)
     count, failed = compare_all(shaper, texts)
     stacked = sum(c.stacked for text in texts[:len(entries)] for c in L.layout(text, SIGNS, TABLE))
     # golden plain words: the glyphs that draw, as for the same words typed with controls
     golden = (("R4-X1-Q3", "R4:X1*Q3"), ("F35-I9-D21", "F35-I9:D21"), ("D21-N35", "D21:N35"),
-              ("S34-N35-Aa1", "S34-N35:Aa1"), ("G14-X1-B1", "G14<13434>X1-B1"))  # mwt: t in the corner
+              ("S34-N35-Aa1", "S34-N35:Aa1"), ("G14-X1-B1", "G14<13434>X1-B1"),  # mwt: t in the corner
+              # the owner's cases (shape rule): bolt over viper, the rest as it is
+              ("O34-I9-D19-A2", "O34:I9-D19-A2"), ("O34-I9-Aa1-G43" + "-Z1" * 7, "O34:I9-Aa1-G43" + "-Z1" * 7),
+              ("N35-N35", "N35:N35"), ("O34-I9-N37-Y1", "O34:I9-N37:Y1"))
     for plain, explicit in golden:
         found = [(g[0], g[2], g[3]) for g in shaper.shape(encode(plain)) if shaper.drawn(g[0])]
         reference = [(g[0], g[2], g[3]) for g in shaper.shape(encode(explicit)) if shaper.drawn(g[0])]
         check(found == reference and len(found) > len({g[0] for g in found if g[0] in shaper.lone}),
               f"{plain} typed plainly: {found}, typed with controls: {reference}")
-    for text in (encode('D21<200C>N35'), encode('D21" "N35'), encode('G14-X1-B1<200C>D21<200C>N35')):
+    for text in (encode('D21<200C>N35'), encode('D21" "N35'), encode('G14-X1-B1<200C>D21<200C>N35'),
+                 encode('O34<200C>I9'), encode('O34" "I9'), encode('A1-O34<200C>I9')):
         drawn = [g[0] for g in shaper.shape(text) if shaper.drawn(g[0])]
         check(all(g in shaper.lone for g in drawn[-2:]), f"{label(text)}: ZWNJ or space joined {drawn}")
+    # pairs that do not stack by shape: narrow low, low and tall, tall and
+    # wide, a run right after a lower sign
+    for plain in ("X1-Z1", "Q3-X1", "D21-A1", "G43-G43", "Q3-N35-D36", "X1-O34-I9-N37"):
+        drawn = [g[0] for g in shaper.shape(encode(plain)) if shaper.drawn(g[0])]
+        check(len(drawn) == len(encode(plain)) and all(g in shaper.lone for g in drawn), f"{plain}: stacked {drawn}")
     # the feature switched off: no automatic stacking at all
     off = Shaper(shaper.path, table=None, features={"calt": False})
     off_count, off_failed = compare_all(off, texts[:len(entries)] + texts[-2300:])

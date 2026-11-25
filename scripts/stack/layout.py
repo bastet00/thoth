@@ -52,8 +52,9 @@ The rules, each stated once:
 10. A sign, a corner insertion control and a sign put the second sign into
     a corner of the first (section 6, rules I1 to I6).
 11. Plain text, signs with no control between them, is stacked as if the
-    controls of a table of known sign sequences were there (section 7,
-    rules A1 to A6). Explicit controls always win.
+    controls of a table of known sign sequences were there, and two
+    half-block signs in a row (low and wide) stack one above the other
+    (section 7, rules A1 to A9). Explicit controls always win.
 
 Rounding. The font can only add whole numbers that its glyphs carry, so
 every position here is such a sum, rounded as the font rounds it: a unit
@@ -347,8 +348,8 @@ def layout(codepoints, signs, table=None):
     automatic_table()), or None for the font with the automatic layer
     switched off.
     """
-    if table:
-        text, origin = automatic(codepoints, table)
+    if table is not None:
+        text, origin = automatic(codepoints, table, signs)
         return [cluster._replace(start=origin[cluster.start], end=origin[cluster.end - 1] + 1)
                 for cluster in layout(text, signs)]
     clusters = []
@@ -827,6 +828,43 @@ def _inserted(start, end, run, signs):
 # A6. Every arrangement in the table is a group the layout stacks (rule 9
 #     never applies to it), so the automatic pass never draws a control box.
 #
+# Then a rule by shape alone (the owner, 2026-11-25: two low, wide signs in
+# a row share one block, one above the other), for the signs no entry took:
+#
+# A7. A half-block sign is a hieroglyph whose cell (rule 2) is at most half
+#     the quadrat high (LOW_HEIGHT units: the low signs of rule 1) and at
+#     least half of it wide (WIDTH_LIMIT / 2 half units): it fills the
+#     width of a block and leaves half of its height free. Two of them fill
+#     a block at full size (level 0). Blanks and lost signs are not
+#     hieroglyphs and never count.
+# A8. After the table (A4), the half-block signs of a stretch that no entry
+#     took and that stand in a row form runs. A run right after a sign that
+#     is lower than the quadrat (cell under HEIGHT_LIMIT units), not
+#     half-block and not taken, stays as it is: that sign may stand above
+#     the first of the run (as p above n). Any other run is cut two by
+#     two from its start into blocks, the first sign above the second; a
+#     sign left over at its end stays alone. So three in a row are a block
+#     of two and a lone sign, four are two blocks; a sign doubled is a
+#     block like any other pair, a sign tripled a block and a lone sign.
+# A9. Rule A5 holds for these blocks too: a sign right after a control
+#     starts no block (the next one may), and a block that reaches the sign
+#     right before a control is not formed. A block of two half-block signs
+#     is at most 12 units high and 28 half units wide, so it is always
+#     stacked at level 0 (rule A6), and its geometry is that of any group
+#     (rules 3 to 8): each sign takes half of the block.
+#
+# Why these choices (measured on dictionary words typed plainly, a check
+# that is not part of the font): pairs of two signs that are both low and
+# at least half the quadrat wide are written one above the other about
+# three times in four; narrower low signs (the bread, the stroke) only
+# about half the time, and a width limit of 16 to 26 half units, or a
+# height limit of 5 units, gives no better precision and fewer stacks.
+# Leaving a run after a lower sign apart takes away most of the wrong
+# stacks across two blocks (a small sign over the first sign of the run)
+# for a sixth of the stacks. Three in a row are a pair and a lone sign
+# about twice as often as a stack of three; a stack of three of the same
+# sign is rare and would cost a rule per sign.
+#
 # The font does the same in GSUB (features.py) under feature "calt", which a
 # text engine or a page can switch off ("font-feature-settings: 'calt' 0");
 # layout(..., table=None) is the font with the feature off.
@@ -905,10 +943,58 @@ def check_table(table, signs):
     return problems
 
 
-def automatic(codepoints, table):
-    """Rules A1 to A5: (text, origin), the text with the implied controls,
+HALF_HEIGHT = LOW_HEIGHT  # units: a half-block sign is at most this high (rule A7)
+HALF_WIDTH = WIDTH_LIMIT // 2  # half units: and at least this wide
+SOURCE = Path(__file__).resolve().parents[2] / "sources" / "Thoth-Regular.ufo"
+_signs = []
+
+
+def default_signs():
+    """The sign table of the source font, read once."""
+    if not _signs:
+        import ufoLib2
+        _signs.append(sign_table(ufoLib2.Font.open(SOURCE)))
+    return _signs[0]
+
+
+def half_block(codepoint, signs):
+    """Rule A7: a sign at most half the quadrat high and at least half of it wide."""
+    sign = signs.get(codepoint)
+    return (sign is not None and codepoint in HIEROGLYPHS
+            and sign.cell[1] <= HALF_HEIGHT and sign.cell[0] >= HALF_WIDTH)
+
+
+def shape_blocks(codepoints, start, end, free, signs, bound_start=False):
+    """Rules A8 and A9 on the signs codepoints[start:end] of one stretch,
+    `free` the indices no entry took: [(index, arrangement)]."""
+    half = [at in free and half_block(codepoints[at], signs) for at in range(start, end)]
+    found, at = [], start
+    while at < end:
+        if not half[at - start]:
+            at += 1
+            continue
+        run_end = at
+        while run_end < end and half[run_end - start]:
+            run_end += 1
+        before = codepoints[at - 1] if at > start else None
+        if before is not None and at - 1 in free and signs[before].cell[1] < HEIGHT_LIMIT:
+            at = run_end  # a lower sign may stand above the first: the run stays as it is
+            continue
+        if bound_start and at == start:
+            at += 1  # rule A9: a sign right after a control starts no block
+        while run_end - at >= 2:  # two by two, the first above the second
+            found.append((at, ((codepoints[at], VERTICAL_JOINER, codepoints[at + 1]),)))
+            at += 2
+        at = run_end
+    return found
+
+
+def automatic(codepoints, table, signs=None):
+    """Rules A1 to A9: (text, origin), the text with the implied controls,
     and for each of its characters the index in codepoints it comes from
-    (an implied control: the sign before it)."""
+    (an implied control: the sign before it). signs: the sign table, by
+    default that of the source font."""
+    signs = signs if signs is not None else default_signs()
     joins = {}  # index of a sign: the controls implied after it
     longest = max(map(len, table), default=0)
     index, count = 0, len(codepoints)
@@ -931,12 +1017,16 @@ def automatic(codepoints, table):
             for length in range(min(longest, len(stretch) - position), 1, -1):
                 arrangement = table.get(stretch[position:position + length])
                 if arrangement is not None:
-                    signs = position + (stretch[position] == START)
-                    taken.append((first + signs, arrangement))
+                    offset = position + (stretch[position] == START)
+                    taken.append((first + offset, arrangement))
                     position += length
                     break
             else:
                 position += 1
+        free = set(range(index, end))  # rule A8: the signs no entry took
+        for at, arrangement in taken:
+            free -= set(range(at, at + sum(is_sign(c) for block in arrangement for c in block)))
+        taken += shape_blocks(codepoints, index, end, free, signs, bound_start)
         for at, arrangement in taken:
             for block in arrangement:
                 size = sum(map(is_sign, block))

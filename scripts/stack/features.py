@@ -26,7 +26,7 @@ memory (their names are in glyphs.Names). GSUB, feature rlig:
              a group.
 
 Before all of these, under feature calt, the automatic layer (layout
-section 7) adds the controls that the table implies in plain text; see
+section 7) adds the controls that the table and the shape rule imply in plain text; see
 _gsub_auto(). HarfBuzz applies calt and rlig in the same stage, lookup by
 lookup in the order of the lookup list, so the automatic lookups, which
 come first in it, run before the stacking lookups; a text engine can turn
@@ -265,7 +265,7 @@ def _gsub(n, w):
 
 
 def _gsub_auto(n, w, auto):
-    """The automatic layer (layout rules A1 to A6), feature calt. S is a
+    """The automatic layer (layout rules A1 to A9), feature calt. S is a
     lone sign, C a control as typed, I a default ignorable. Returns the
     lookups, in order.
 
@@ -282,11 +282,17 @@ def _gsub_auto(n, w, auto):
                  the word start as its backtrack, one marked END the word
                  end as its lookahead. At each sign that the arrangement
                  joins to the next, the slot after it becomes that implied
-                 control: a substitution of one glyph by one, so that the
-                 rule's positions do not move. A rule with none only takes
-                 the signs. A rule consumes its signs, so the next rule is
-                 tried after them (rule A4). S right after C starts nothing
-                 (rule A5).
+                 control, and every other slot of the entry an inner slot:
+                 a substitution of one glyph by one, so that the rule's
+                 positions do not move. A rule consumes its signs, so the
+                 next rule is tried after them (rule A4). S right after C
+                 starts nothing (rule A5).
+     3b. shape   the signs that no entry took (no inner slot or implied
+                 control next to them) and that are half-block (rule A7):
+                 a run of them right after a free lower sign has its slots
+                 kept; otherwise they become blocks two by two, the slot
+                 between the two a vertical joiner (rule A8); a block does
+                 not start right after C (rule A9).
      4. release  right to left, an implied control before the S that is
                  right before C, and every implied control of the same
                  block before it, becomes an empty glyph (rule A5).
@@ -312,11 +318,14 @@ def _gsub_auto(n, w, auto):
     w.lookup("auto_slots", [f"sub {sign}' lookup auto_slot_mark {sign}"])
     lookups += ["auto_starts", "auto_ends", "auto_slots"]
 
-    # 3. stack: at a sign, the slot after it becomes an implied control
+    # 3. stack: at a sign, the slot after it becomes an implied control,
+    # or an inner slot where the entry joins nothing
     for control in auto.controls:
         w.lookup(f"auto_to_{control_name(control)}", [f"sub {auto.slot} by {auto.join(control)}"])
         w.lookup(f"auto_{control_name(control)}",
                  [f"sub {sign}' {auto.slot}' lookup auto_to_{control_name(control)}"])
+    w.lookup("auto_to_inner", [f"sub {auto.slot} by {auto.inner}"])
+    w.lookup("auto_inner", [f"sub {sign}' {auto.slot}' lookup auto_to_inner"])
 
     def order(item):  # by the first sign; the rules of one sign as rule A4 tries them
         key, _ = item
@@ -338,13 +347,36 @@ def _gsub_auto(n, w, auto):
                 if L.is_sign(a):
                     follows.append(None if b is None or L.is_sign(b) else b)
         signs_of = [c for c in key if c not in (L.START, L.END)]
-        body = " ".join(f"{n.lone(c)}'" + (f" lookup auto_{control_name(f)}" if f else "")
-                        for c, f in zip(signs_of, follows))
+        body = " ".join(f"{n.lone(c)}'" + (f" lookup auto_{control_name(f) if f else 'inner'}"
+                                           if i < len(signs_of) - 1 else "")
+                        for i, (c, f) in enumerate(zip(signs_of, follows)))
         back = f"{auto.start} " if key[0] == L.START else ""
         ahead = f" {auto.end}" if key[-1] == L.END else ""
-        rules.append(f"{'' if any(follows) else 'ignore '}sub {back}{body}{ahead}")
+        rules.append(f"sub {back}{body}{ahead}")
     w.lookup("auto_stack", rules, w.define("A_WORD", [auto.start, auto.end]), extension=True)
     lookups.append("auto_stack")
+
+    # 3b. shape (rules A7 to A9), over the signs no entry took: theirs are
+    # the signs with no inner slot or implied control on either side. A
+    # sign is free on its left after a slot, a word start or a control.
+    signs_table = n.signs
+    half = [c for c in signs if L.half_block(c, signs_table)]
+    lower = [c for c in signs if not L.half_block(c, signs_table) and signs_table[c].cell[1] < L.HEIGHT_LIMIT]
+    half_cls = w.define("A_HALF", [n.lone(c) for c in half])
+    lower_cls = w.define("A_LOWER", [n.lone(c) for c in lower])
+    vj = f"auto_to_{control_name(L.VERTICAL_JOINER)}"
+    w.lookup("auto_to_kept", [f"sub {auto.slot} by {auto.kept}"])
+    free_left = f"[{auto.slot} {auto.start} {ctrl}]"
+    free_right = f"[{auto.slot} {auto.end} {ctrl}]"
+    start_left = f"[{auto.slot} {auto.start}]"  # rule A9: not after a control
+    rules = [  # a run right after a free lower sign stays as it is: its slots are kept
+        f"sub {free_left} {lower_cls} {auto.slot} {half_cls}' {auto.slot}' lookup auto_to_kept {half_cls}",
+        f"sub {auto.kept} {half_cls}' {auto.slot}' lookup auto_to_kept {half_cls}",
+        "subtable",  # else two, the first above the second
+        f"sub {start_left} {half_cls}' {auto.slot}' lookup {vj} {half_cls}' {free_right}",
+    ]
+    w.lookup("auto_shape", rules)
+    lookups.append("auto_shape")
 
     # 4. release, 5. controls
     rules = []
