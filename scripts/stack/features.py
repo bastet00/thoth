@@ -57,11 +57,13 @@ class Writer:
         self.text.append(f"@{name} = {cls(glyphs)};")
         return f"@{name}"
 
-    def lookup(self, name, rules, marks=None, table=None):
+    def lookup(self, name, rules, marks=None, table=None, extension=False):
         """A lookup; marks: its mark filtering set; table: "gsub" or "gpos"
-        if a feature applies it (else it is only called by other lookups)."""
+        if a feature applies it (else it is only called by other lookups);
+        extension: stored as an extension lookup, at the end of its table."""
         flag = [f"    lookupflag UseMarkFilteringSet {marks};"] if marks else []
-        self.text += [f"lookup {name} {{", *flag, *(f"    {r};" for r in rules), f"}} {name};"]
+        ext = " useExtension" if extension else ""
+        self.text += [f"lookup {name}{ext} {{", *flag, *(f"    {r};" for r in rules), f"}} {name};"]
         if table:
             getattr(self, table).append(name)
 
@@ -111,6 +113,7 @@ def _gsub(n, w):
     # HarfBuzz skips a default ignorable when it matches context, unless
     # the rule names it, so the rules name them where they end a run
     ign = w.define("IGNORABLE", n.ignorables)
+    _gsub_insert(n, w, lone, ign)  # corner insertion comes first: its fallback is a flat group
     w.lookup("check", [f"ignore sub {ign} [{vj} {hj}]'", f"ignore sub [{vj} {hj}]' {ign}",
                        f"sub {lone} [{vj} {hj}]' lookup okj {lone}"], table="gsub")
     w.lookup("bad_after", [f"ignore sub {bad} {ign} {lone} {okj}'",
@@ -300,6 +303,154 @@ def _gpos(n, w):
     w.lookup("place_cells", rules, w.define("F_CELLS", members), "gpos")
 
 
+def _gsub_insert(n, w, lone, ign):
+    """Corner insertion (layout section 6), before the flat stages, whose
+    horizontal joiner is its fallback. B is the base, C the corner control,
+    S the inserted sign.
+
+     1. check    C between two lone signs becomes a candidate, unless an
+                 ignorable touches it; a candidate whose base follows, or
+                 whose S is followed by, another control goes back to its
+                 box (rule I1). Before an insertable S, the candidate takes
+                 the shape of S.
+     2. shrink   a bird before a candidate and a sign that it can only take
+                 smaller (rule I4) becomes its shrunk glyph.
+     3. zone     the candidate gets the zone of B for its corner and shape:
+                 a height and a width marker after it, from one class
+                 definition of bases per corner and shape (rule I2).
+     4. level    S becomes its variant at the first of INSERT_LEVELS and
+                 goes one level down while it is wider or higher than the
+                 zone; past the last level it is lone again (rule I3). A
+                 marker after it ends the block.
+     5. mark     the zone markers become one; before a variant, the
+                 candidate becomes the mark of its corner, shape and the
+                 variant's width in units, which hangs from B (rule I5); any other
+                 candidate becomes a horizontal joiner (rule I6).
+     6. cluster  B and the marker after S make a ligature (B again), so B,
+                 C and S are one cluster.
+    """
+    i = n.inserts
+    corners, shapes = list(L.CORNERS), i.shapes
+    cands = [i.candidate(c) for c in corners]
+    controls = cls(control_name(c) for c in corners)
+    cand = w.define("I_CAND", cands)
+    shaped = w.define("I_SHAPED", [i.shaped(c, s) for c in corners for s in shapes])
+    others = w.define("I_CONTROLS", [control_name(c) for c in CONTROLS] + i.candidates())
+    insertable = w.define("I_INS", [n.lone(c) for c in i.insertable])
+    zw = w.define("I_ZW", [i.zone_width(x) for x in i.widths])
+    zh = w.define("I_ZH", [i.zone_height(x) for x in i.heights])
+
+    # 1. check
+    w.lookup("ins_to_cand", [f"sub {control_name(c)} by {i.candidate(c)}" for c in corners])
+    w.lookup("ins_undo", [f"sub {i.candidate(c)} by {control_name(c)}" for c in corners])
+    w.lookup("ins_check", [f"ignore sub {ign} {controls}'", f"ignore sub {controls}' {ign}",
+                           f"sub {lone} {controls}' lookup ins_to_cand {lone}"], table="gsub")
+    w.lookup("ins_alone_before", [f"ignore sub {others} {ign} {lone} {cand}'",
+                                  f"sub {others} {lone} {cand}' lookup ins_undo"], table="gsub")
+    w.lookup("ins_alone_after", [f"ignore sub {cand}' {lone} {ign} {others}",
+                                 f"sub {cand}' lookup ins_undo {lone} {others}"], table="gsub")
+    rules = []
+    for s in shapes:
+        w.lookup(f"ins_to_{s}", [f"sub {i.candidate(c)} by {i.shaped(c, s)}" for c in corners])
+        rules.append(f"sub {cand}' lookup ins_to_{s} {cls(n.lone(c) for c in i.insertable if i.shape[c] == s)}")
+    w.lookup("ins_shape", rules, table="gsub")
+
+    # 2. shrink: the birds and signs for which layout.insertion() says so
+    if i.shrinks:
+        for level in L.SHRINK_LEVELS:
+            w.lookup(f"ins_shrink_{level}", [f"sub {n.lone(c)} by {i.shrunk(c, k)}"
+                                              for c, k in i.shrunk_glyphs if k == level])
+        rules = [f"sub {n.lone(b)}' lookup ins_shrink_{level} {cls(i.shaped(control, s) for s in shapes)} "
+                 f"{cls(n.lone(c) for c in sorted(found))}"
+                 for (b, control, level), found in sorted(i.shrinks.items())]
+        w.lookup("ins_shrink", rules, table="gsub")
+
+    # 3. zone: the width, then the height, each a rule per corner, shape
+    # and size; the height marker ends up first
+    for part, sizes, marker in ((0, i.widths, i.zone_width), (1, i.heights, i.zone_height)):
+        name = ("ins_zone_width", "ins_zone_height")[part]
+        for x in sizes:
+            w.lookup(f"{name}_{x}", [f"sub {c} by {c} {marker(x)}" for c in i.candidates()[len(cands):]])
+        found = defaultdict(list)
+        for (base, level, control, shape), zone in sorted(i.zones.items()):
+            found[(control, shape, zone[part])].append(i.base(base, level))
+        w.lookup(name, [f"sub {cls(bases)} {i.shaped(control, shape)}' lookup {name}_{x}"
+                        for (control, shape, x), bases in sorted(found.items())], table="gsub", extension=True)
+
+    # 4. level: from the first insert level down, one lookup per level
+    first, last = L.INSERT_LEVELS[0], L.INSERT_LEVELS[-1]
+    w.lookup("ins_first", [f"sub {n.lone(c)} by {n.variant(c, first)} {i.cluster_end}" for c in i.insertable])
+    w.lookup("ins_start", [f"sub {shaped} {zh} {zw} {insertable}' lookup ins_first"], table="gsub")
+    for k in L.INSERT_LEVELS:
+        after = [n.variant(c, k + 1) if k < last else n.lone(c) for c in i.insertable]
+        w.lookup(f"ins_next_{k}", [f"sub {n.variant(c, k)} by {a}" for c, a in zip(i.insertable, after)])
+        # wider than the zone: the width marker before the variant
+        found = defaultdict(list)
+        for c in i.insertable:
+            found[i.size[(c, k)][0]].append(n.variant(c, k))
+        rules = [f"sub {cls(i.zone_width(x) for x in i.widths if x < a)} {cls(found[a])}' lookup ins_next_{k}"
+                 for a in sorted(found) if a > i.widths[0]]
+        # higher than the zone: the height marker, then the width marker
+        found = defaultdict(list)
+        for c in i.insertable:
+            found[i.size[(c, k)][1]].append(n.variant(c, k))
+        rules += [f"sub {cls(i.zone_height(y) for y in i.heights if y < b)} {zw} {cls(found[b])}' "
+                  f"lookup ins_next_{k}" for b in sorted(found) if b > i.heights[0]]
+        w.lookup(f"ins_level_{k}", rules, table="gsub")
+
+    # 5. mark
+    w.lookup("ins_zone_done", [f"sub {i.zone_height(y)} {i.zone_width(x)} by {i.zone_done}"
+                               for y in i.heights for x in i.widths], table="gsub")
+    rules = []
+    for shape, size in i.mark_sizes:
+        variants = [n.variant(c, k) for c in i.insertable for k in L.INSERT_LEVELS
+                    if i.shape[c] == shape and L.seat_width(i.size[(c, k)]) == size]
+        rules.append(f"rsub {cls(i.shaped(c, shape) for c in corners)}' {i.zone_done} {cls(variants)} "
+                     f"by {cls(i.mark(c, shape, size) for c in corners)}")
+    w.lookup("ins_mark", rules, table="gsub")
+    hj = control_name(L.HORIZONTAL_JOINER)
+    w.lookup("ins_joiner_zone", [f"sub {c} {i.zone_done} by {hj}" for c in i.candidates()[len(cands):]],
+             table="gsub")
+    w.lookup("ins_joiner", [f"sub {cls(i.candidates())} by {hj}"], table="gsub")
+
+    # 6. cluster: every base that takes a sign somewhere
+    bases = sorted({i.base(base, level) for base, level, _, _ in i.zones})
+    w.lookup("ins_cluster", [f"sub {b} {i.cluster_end} by {b}" for b in bases],
+             w.define("I_END", [i.cluster_end]), "gsub", extension=True)
+
+
+def _gpos_insert(n, w):
+    """Corner insertion: the corner mark hangs from the base at the anchor
+    of its width (rule I5), in subtables by corner, shape and the narrowest
+    and widest sign a base takes, so that a base has few empty anchors; the inserted sign hangs from the corner mark by the centre of the
+    bottom of its ink, which is its variant's origin. Returns the lookups,
+    mark to base first."""
+    i = n.inserts
+    for control in L.CORNERS:
+        for shape, size in i.mark_sizes:
+            w.text.append(f"markClass {i.mark(control, shape, size)} <anchor 0 0> @I_{control:X}_{shape}_{size};")
+    groups = defaultdict(list)
+    for key, sizes in sorted(i.anchors.items()):
+        groups[(key[2], key[3], min(sizes), max(sizes))].append(key)
+    rules = []
+    for (control, shape, *_), keys in sorted(groups.items()):
+        if rules:
+            rules.append("subtable")
+        for key in keys:
+            base, level = key[:2]
+            zone, lift = i.zones[key], n.signs[base].lift
+            anchors = " ".join(f"<anchor {zone.x} {zone.seats[size - 1] + lift}> mark @I_{control:X}_{shape}_{size}"
+                               for size in sorted(i.anchors[key]))
+            rules.append(f"pos base {i.base(base, level)} {anchors}")
+    w.lookup("ins_place", rules)
+    variants = [n.variant(c, k) for c in i.insertable for k in L.INSERT_LEVELS]
+    w.text.append(f"markClass {cls(variants)} <anchor 0 0> @I_SIGN;")
+    marks = i.corner_marks()
+    w.lookup("ins_sign_place", [f"pos mark {cls(marks)} <anchor 0 0> mark @I_SIGN"],
+             w.define("I_PLACE", marks + variants))
+    return ["ins_place", "ins_sign_place"]
+
+
 def categories(font, names):
     """GDEF glyph classes, in the form of public.openTypeCategories.
 
@@ -310,8 +461,8 @@ def categories(font, names):
     """
     bases = {glyph.name for glyph in font
              if any(u in SIGNS or u == DOTTED_CIRCLE for u in glyph.unicodes)}
-    bases |= {*names.joined.values(), *names.heads()}
-    marks = set(names.markers())
+    bases |= {*names.joined.values(), *names.heads(), *names.inserts.bases()}
+    marks = set(names.markers()) | set(names.inserts.markers())
     for level in LEVELS:
         marks |= set(names.leveled(level))
     found = {name: "base" for name in bases}
@@ -334,8 +485,9 @@ def add_features(font, names):
             body += [f"    lookup {name};" for name in lookups]
         return [f"feature {tag} {{", *body, f"}} {tag};"]
 
+    inserts = _gpos_insert(names, w)
     w.text += feature("rlig", w.gsub)
-    w.text += feature("mark", w.gpos[:1], automatic=True)
-    w.text += feature("mkmk", w.gpos[1:], automatic=True)
+    w.text += feature("mark", w.gpos[:1] + inserts[:1], automatic=True)
+    w.text += feature("mkmk", w.gpos[1:] + inserts[1:], automatic=True)
     font.lib["public.openTypeCategories"] = categories(font, names)
     font.features.text = "\n".join(w.text) + "\n"

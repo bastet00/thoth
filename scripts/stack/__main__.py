@@ -14,7 +14,7 @@ import ufoLib2
 
 import layout
 from features import add_features
-from glyphs import Names, add_controls, add_stacking, lift_signs
+from glyphs import Names, add_controls, add_insertion, add_stacking, lift_signs
 
 # A designspace with one source, because gftools builder can only add the
 # transliteration letters (includeSubsets in config.yaml) to a designspace.
@@ -43,7 +43,8 @@ def main(source, build_dir):
     font = ufoLib2.Font.open(source)
     names = Names(layout.sign_table(font), font)  # measured on the source outlines
     lift_signs(font, names.signs)
-    order = font.lib["public.glyphOrder"] + add_controls(font) + add_stacking(font, names)
+    order = (font.lib["public.glyphOrder"] + add_controls(font) + add_stacking(font, names)
+             + add_insertion(font, names))
     font.lib["public.glyphOrder"] = order
     add_features(font, names)
 

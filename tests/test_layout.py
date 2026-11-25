@@ -136,7 +136,7 @@ MALFORMED = [
     [V], [V, N35], [H, A1, A1], [X1, V, N35, V], [X1, V, V, N35], [X1, V, V, N35, A1],
     [X1, V, H, N35], [X1, V, 0x20, N35], [X1, 0x200D, V, N35],
     [SEGMENT, X1, V, N35], [X1, V, N35, END], [SEGMENT, X1, V, N35, END],
-    [M17, H, SEGMENT, X1, V, N35, V, A1], [X1, OVERLAY, O1, N35], [A1, INSERT, O1, X1],
+    [M17, H, SEGMENT, X1, V, N35, V, A1], [X1, OVERLAY, O1, N35], [A1, INSERT, O1, V, X1],
     [A1, MIRROR], [I9, V, N35, V, 0x13113, 0x13433, A1], [*range(0x13430, 0x13441)],
     [A1, V, A1, V, A1, V, A1],  # 48 units high: over the cap
     [N35, H, N35, H, N35],  # 78 half units wide: over the cap
@@ -213,7 +213,9 @@ def check_visible(codepoints, signs):
     pen = 0
     for cluster, inks in laid:
         check(cluster.advance > 0, f"{name}: a cluster has no advance")
-        if cluster.stacked:
+        if inserted(codepoints, cluster, signs):
+            check_inserted(name, codepoints[cluster.start:cluster.end], cluster, signs)
+        elif cluster.stacked:
             check(all(pen <= ink[0] and ink[2] <= pen + cluster.advance for ink in inks),
                   f"{name}: a sign leaves the advance of its group")
             check(all(glyph.scale == signs[glyph.codepoint].scales[glyph.level]
@@ -237,10 +239,13 @@ def check_visible(codepoints, signs):
     def overhangs(cluster, glyph):
         sign = signs.get(glyph.codepoint)
         return not cluster.stacked and sign and not 0 <= sign.box[0] <= sign.box[2] <= sign.advance
-    every = [(ink, overhangs(cluster, glyph))
-             for cluster, inks in laid for glyph, ink in zip(cluster.glyphs, inks)]
-    check(all(apart(a, b) > 0 for i, (a, one) in enumerate(every) for b, other in every[:i]
-              if not (one or other)), f"{name}: two glyphs overlap")
+    # an inserted sign is inside its base's box: check_inserted() keeps it
+    # off the base's ink; here it is checked against everything else
+    every = [(ink, overhangs(cluster, glyph), (n, inserted(codepoints, cluster, signs)))
+             for n, (cluster, inks) in enumerate(laid) for glyph, ink in zip(cluster.glyphs, inks)]
+    check(all(apart(a, b) > 0 for i, (a, one, (n, ins)) in enumerate(every)
+              for b, other, (m, _) in every[:i] if not (one or other or (ins and n == m))),
+          f"{name}: two glyphs overlap")
 
 
 def test_constants(signs):
@@ -461,6 +466,143 @@ def test_rounding(signs):
                       f"{label(group(rows))}: a position is not whole")
 
 
+# --- corner insertion (layout section 6) ---------------------------------------
+
+G1, G7, G17, G25, G39, G43 = 0x1313F, 0x13146, 0x13153, 0x1315C, 0x1316D, 0x13171
+M23, D31, D46, I10, AA1 = 0x131D3, 0x13096, 0x130A7, 0x13193, 0x1340D
+TS, BS, TE, BE = 0x13432, 0x13433, 0x13434, 0x13435
+BIRDS = [c for c in range(0x1313F, 0x1317F)]  # Gardiner G1 to G54
+
+# The owner's cases, as golden lines: for each cluster its advance and its
+# glyphs (code point, x, y, level, scale). Written here, not read from
+# layout.py. The vulture of mwt and the quail chick shrink to level 1 so
+# that the bread reaches level 2 and 3 instead of 5 (half size).
+INSERT_GOLDEN = [
+    ([G14, TE, X1, B1],  # mwt: vulture with t in its corner, then the woman
+     [(1055, [(G14, 76, 0, 1, 0.855), (X1, 547, 649, 2, 0.738)]), (677, [(B1, 0, 0, 0, 1.0)])]),
+    ([G43, TE, X1],  # quail chick with t
+     [(860, [(G43, 62, -2, 1, 0.855), (X1, 421, 635, 3, 0.665)])]),
+    ([G1, TE, X1],  # vulture G1 with t: no shrink, level 3
+     [(985, [(G1, 0, 0, 0, 1.0), (X1, 547, 702, 3, 0.665)])]),
+    ([G17, TE, X1],  # owl with t
+     [(1116, [(G17, 0, 0, 0, 1.0), (X1, 608, 602, 2, 0.738)])]),
+    ([G39, TE, Z1],  # sꜣ: the stroke over the duck's tail
+     [(1248, [(G39, 0, 0, 0, 1.0), (Z1, 966, 431, 2, 0.723)])]),
+    ([M23, G14, TE, X1, N35, G17, D21, D31],  # the TLA's M23-G14-X1:N35-G17-D21-D31
+     [(668, [(M23, 0, 0, 0, 1.0)]), (1055, [(G14, 76, 0, 1, 0.855), (X1, 547, 649, 2, 0.738)]),
+      (1197, [(N35, 0, 506, 0, 1.0)]), (1116, [(G17, 0, 0, 0, 1.0)]), (1177, [(D21, 0, 385, 0, 1.0)]),
+      (740, [(D31, 0, 0, 0, 1.0)])]),
+    ([G25, BE, AA1],  # figure 11-2's G25 bottom end: no room, side by side (rule I6)
+     [(1318, [(G25, 14, 5, 2, 0.744), (AA1, 805, 61, 2, 0.74)])]),
+]
+
+# What v1 does with everything else (rule I1): drawn unstacked, the control
+# as its box. A text, and the clusters it must have as (start, end).
+INSERT_UNSTACKED = [
+    [N35, V, G14, TE, X1], [G14, TE, X1, V, N35], [A1, H, G14, TE, X1],  # base in a group
+    [G14, TE, X1, H, Z1], [G14, TE, X1, V, Z1],  # an inserted group
+    [G14, TE, X1, BS, Z1], [G14, TE, X1, TE, Z1], [G14, TE, Z1, TE, X1],  # a second insertion
+    [TE, X1], [G14, TE], [TE], [G14, TE, TE, X1], [G14, TE, BS, X1],  # malformed
+    [G14, TE, 0x200D, X1], [G14, 0x200D, TE, X1], [G14, TE, 0x20, X1],  # broken by other characters
+    [G14, TE, X1, OVERLAY, Z1], [SEGMENT, G14, TE, X1, END],  # unsupported controls
+]
+
+
+def inserted(codepoints, cluster, signs):
+    """Whether a cluster is a sign inserted into a corner of another."""
+    run = codepoints[cluster.start:cluster.end]
+    return L.is_insertion(run) and L.insertion(*run, signs) is not None
+
+
+def base_envelope(glyph, signs):
+    """(high, low) of a drawn base (lone or shrunk), in the strips of its
+    full-size frame, without its lift."""
+    sign = signs[glyph.codepoint]
+    transform = L.shrink(sign.box, glyph.level) if glyph.level else (1, 0, 0)
+    frame = (sign.box[0], sign.box[1], sign.box[2], max(sign.box[3], L.FRAME_TOP))
+    return L._envelope(SOURCE, SOURCE[sign.name], frame, transform)
+
+
+def check_inserted(name, run, cluster, signs):
+    """Rules I1 to I5, said as properties of one insertion."""
+    base, control, sign = run
+    top, end = L.CORNERS[control]
+    b, i = cluster.glyphs
+    lift = signs[base].lift
+    check(cluster.advance == signs[base].advance, f"{name}: the insertion changes the advance")
+    check(i.level in L.INSERT_LEVELS and i.scale == signs[sign].scales[i.level]
+          and L.insertable(signs[sign]), f"{name}: the inserted sign is not one of its variants")
+    full = L.insert_level(signs[base].corners[control][0][L.shape_of(signs[sign])], signs[sign])
+    if b.level:  # I4: a bird that would hold the sign only at half size
+        check(base in L.BIRDS and b.level in L.SHRINK_LEVELS and full == L.INSERT_LEVELS[-1]
+              and i.level <= L.WANTED_LEVEL, f"{name}: a base shrinks that may not")
+        box, scaled = signs[base].box, L.ink_box(b, signs)
+        check(abs(scaled[1] - lift - box[1]) <= 1 and abs(scaled[0] + scaled[2] - box[0] - box[2]) <= 2,
+              f"{name}: the shrunk base moved")
+        smaller = [k for k in L.SHRINK_LEVELS if k < b.level]
+        check(all(L.insert_level(signs[base].corners[control][k][L.shape_of(signs[sign])],
+                                 signs[sign]) not in range(L.WANTED_LEVEL + 1) for k in smaller),
+              f"{name}: the base shrinks more than it must")
+    else:
+        check(b == L.Glyph(base, 0, lift, 0, 1.0) and i.level == full, f"{name}: the base is not the lone sign")
+    ink = L.ink_box(i, signs)
+    check(0 <= ink[0] and ink[2] <= cluster.advance, f"{name}: the inserted sign leaves the block")
+    check(ink[3] - lift <= max(signs[base].box[3], L.FRAME_TOP) + 2, f"{name}: the inserted sign is above the frame")
+    # never on the base's ink; in a top corner seated GAP above it, in a
+    # bottom corner on the base's line
+    high, low = base_envelope(b, signs)
+
+    def strips(margin):  # the strips within `margin` of the inserted ink
+        return [s for s in range(len(high)) if signs[base].box[0] + (s + 1) * L.STRIP > ink[0] - margin
+                and signs[base].box[0] + s * L.STRIP < ink[2] + margin]
+
+    if top:  # its width is counted in whole units: up to a STEP more on each side
+        near = max((high[s] for s in strips(L.GAP - 2) if high[s] > -1e9), default=None)
+        wide = max((high[s] for s in strips(L.GAP + L.STEP + L.STRIP) if high[s] > -1e9), default=None)
+        check(near is None or ink[1] - lift - near >= L.GAP - 2, f"{name}: the inserted sign touches the base")
+        check(wide is None or ink[1] - lift - wide <= L.GAP + 2,
+              f"{name}: the inserted sign floats {ink[1] - lift - (wide or 0):.0f} above the ink under it")
+    else:
+        over = min((low[s] for s in strips(L.GAP - 2) if low[s] < 1e9), default=None)
+        check(over is None or over - (ink[3] - lift) >= L.GAP - 2, f"{name}: the inserted sign touches the base")
+        check(abs(ink[1] - lift - signs[base].box[1]) <= 1 or b.level, f"{name}: the inserted sign is off the line")
+
+
+def test_insertion(signs):
+    for codepoints, expected in INSERT_GOLDEN:
+        got = result(codepoints, signs)
+        check(got == expected, f"{label(codepoints)}:\n  got      {got}\n  expected {expected}")
+    for codepoints in INSERT_UNSTACKED:
+        clusters = L.layout(codepoints, signs)
+        check(not any(cluster.stacked for cluster in clusters), f"{label(codepoints)}: stacked")
+        check_visible(codepoints, signs)
+    # rule I6: no room, or a sign too large, is the horizontal joiner
+    for codepoints in ([D21, TE, X1], [G14, TE, A1], [G25, BE, AA1], [I10, BS, D46], [N35, TS, X1]):
+        flat = L.layout([codepoints[0], H, codepoints[2]], signs)
+        check(L.insertion(*codepoints, signs) is None and L.layout(codepoints, signs) == flat,
+              f"{label(codepoints)}: not side by side")
+    outcomes = {}
+    rng = random.Random(13)
+    small = [c for c in sorted(signs) if L.insertable(signs[c])]
+    texts = [[bird, TE, sign] for bird in BIRDS for sign in (X1, Z1)]
+    texts += [[base, control, sign] for base in (A1, D21, G1, G17, G43, I10, N35, O1, M17, Q3)
+              for control in L.CORNERS for sign in (X1, Z1, Z4, N35, Q3)]
+    texts += [[rng.choice(sorted(signs)), rng.choice(list(L.CORNERS)), rng.choice(small)] for _ in range(1500)]
+    texts += [[rng.choice(BIRDS), rng.choice(list(L.CORNERS)), rng.choice(small)] for _ in range(500)]
+    for text in texts:
+        check_visible(text + [0x20, B1], signs)
+        found = L.insertion(*text, signs)
+        key = "side by side" if found is None else f"base {found[0]}, sign {found[1]}"
+        outcomes[key] = outcomes.get(key, 0) + 1
+        check(L.layout(text, signs) == L.layout(text, signs), f"{label(text)}: not deterministic")
+    check(L.insertion(G14, TE, X1, signs) == (1, 2) and L.insertion(G43, TE, X1, signs) == (1, 3),
+          "mwt and the quail chick no longer shrink to level 1")
+    check(all(outcomes.get(f"base 0, sign {k}") for k in L.INSERT_LEVELS) and outcomes.get("side by side")
+          and all(any(key.startswith(f"base {k},") for key in outcomes) for k in L.SHRINK_LEVELS),
+          f"the insertion texts miss an outcome: {outcomes}")
+    print(f"  insertions: {len(texts)} texts, " + ", ".join(f"{k}: {n}" for k, n in sorted(outcomes.items())))
+
+
 def test_malformed(signs):
     for codepoints in MALFORMED:
         clusters = L.layout(codepoints, signs)
@@ -518,7 +660,7 @@ def test_random(signs):
 def main():
     signs = L.sign_table(SOURCE)
     tests = (test_constants, test_signs, test_grammar, test_golden, test_golden_notices_constants,
-             test_owner_rules, test_rounding, test_malformed, test_random)
+             test_owner_rules, test_rounding, test_insertion, test_malformed, test_random)
     for test in tests:
         try:
             test(signs)

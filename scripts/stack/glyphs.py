@@ -11,6 +11,8 @@ Three kinds:
 Names says which glyphs exist; features.py uses the same names.
 """
 
+from collections import defaultdict
+
 from ufoLib2.objects import Component, Glyph
 
 import layout as L
@@ -164,6 +166,13 @@ class Names:
     def spacer(d, level):
         return f"_{level}.sp.{d}"
 
+    @property
+    def inserts(self):
+        """The glyphs and data of corner insertion (Inserts)."""
+        if not hasattr(self, "_inserts"):
+            self._inserts = Inserts(self.signs)
+        return self._inserts
+
     # -- the vertical state of a group --
     @staticmethod
     def row_counts(height):
@@ -291,3 +300,125 @@ def add_stacking(font, names):
             font[names.variant(codepoint, level)].components.append(
                 Component(sign.name, (scale, 0, 0, scale, *offset)))
     return names.heads()
+
+
+# --- Corner insertion (layout section 6) -------------------------------------
+
+CORNER_TAGS = {L.TOP_START: "ts", L.BOTTOM_START: "bs", L.TOP_END: "te", L.BOTTOM_END: "be"}
+
+
+class Inserts:
+    """Glyphs of corner insertion and what the features need to know.
+
+    The rules of layout.py are tabulated here once, from layout.insertion():
+    which birds shrink before which signs, the zone class (width, height) of
+    every base for each corner and shape, the size class of every
+    insertable sign at each level, and the anchors.
+
+    Glyphs: a corner control between two signs becomes a candidate (a box,
+    in case no rule takes it), then the candidate of its corner and the
+    shape of the inserted sign; a shrunk bird is the bird's outline scaled
+    as layout.shrink() says, with the bird's advance; the zone of the base
+    is two markers after the candidate, its width and its height, which
+    become one marker once the level is known; the candidate then becomes
+    the mark of its corner, of the shape and of the width of the inserted
+    sign, which hangs from the base where a sign of that width stands; a
+    marker after the inserted sign makes the block one cluster.
+    """
+
+    zone_done, cluster_end = "_izx", "_iye"
+
+    def __init__(self, signs):
+        self.signs = signs
+        self.insertable = sorted(c for c in signs if L.insertable(signs[c]))
+        self.shape = {c: L.shape_of(signs[c]) for c in self.insertable}
+        self.size = {(c, k): L.insert_size(signs[c], k) for c in self.insertable for k in L.INSERT_LEVELS}
+        levels = (0, *L.SHRINK_LEVELS)
+        # what layout.insertion() decides, for every base, corner and sign
+        self.shrinks = defaultdict(set)  # (bird, control, base level): {inserted sign}
+        self.zones = {}  # (base, base level, control, shape): Zone, where some sign is placed
+        self.anchors = defaultdict(set)  # the same key: {width of the inserted sign, in units}
+        for base in sorted(signs):
+            for control in L.CORNERS:
+                for c in self.insertable:
+                    found = L.insertion(base, control, c, signs)
+                    if found is None:
+                        continue
+                    level, inner = found
+                    if level:
+                        self.shrinks[(base, control, level)].add(c)
+                    key = (base, level, control, self.shape[c])
+                    self.zones[key] = signs[base].corners[control][levels.index(level)][self.shape[c]]
+                    self.anchors[key].add(L.seat_width(self.size[(c, inner)]))
+        self.shrunk_glyphs = sorted({(base, level) for base, level, _, _ in self.zones if level})
+        self.widths = sorted({zone.width for zone in self.zones.values()})
+        self.heights = sorted({zone.height for zone in self.zones.values()})
+        self.shapes = sorted(L.SHAPES)
+        # the widths of inserted signs: a mark for each, in every corner
+        self.mark_sizes = sorted({(shape, w) for (_, _, _, shape), ws in self.anchors.items() for w in ws})
+
+    # -- names --
+    @staticmethod
+    def candidate(control):
+        return f"{control_name(control)}.ins"
+
+    @staticmethod
+    def shaped(control, shape):  # the candidate, before a sign of this shape
+        return f"{control_name(control)}.ins.{shape}"
+
+    @staticmethod
+    def zone_width(width):  # the width of the zone, in STEPs
+        return f"_izw.{width}"
+
+    @staticmethod
+    def zone_height(height):
+        return f"_izh.{height}"
+
+    @staticmethod
+    def mark(control, shape, width):  # an inserted sign `width` units wide
+        return f"_in.{CORNER_TAGS[control]}.{shape}.{width}"
+
+    def shrunk(self, codepoint, level):
+        return f"{self.signs[codepoint].name}.shrink{level}"
+
+    def base(self, codepoint, level):
+        """The glyph of a base drawn at a level: lone, or shrunk."""
+        return self.shrunk(codepoint, level) if level else self.signs[codepoint].name
+
+    # -- families --
+    def bases(self):
+        """Glyphs with an advance: the candidates and the shrunk birds."""
+        return self.candidates() + [self.shrunk(c, k) for c, k in self.shrunk_glyphs]
+
+    def candidates(self):
+        return ([self.candidate(c) for c in L.CORNERS]
+                + [self.shaped(c, s) for c in L.CORNERS for s in self.shapes])
+
+    def corner_marks(self):
+        return [self.mark(c, s, x) for c in L.CORNERS for s, x in self.mark_sizes]
+
+    def markers(self):
+        """Empty marks: the zone, the end of the block and the corner marks."""
+        return ([self.zone_width(w) for w in self.widths] + [self.zone_height(h) for h in self.heights]
+                + [self.zone_done, self.cluster_end] + self.corner_marks())
+
+
+def add_insertion(font, names):
+    """Add the glyphs of corner insertion. Returns those with an advance,
+    for the glyph order."""
+    inserts = names.inserts
+    for name in inserts.candidates():
+        glyph = Glyph(name, width=L.CONTROL_ADVANCE)
+        glyph.components.append(Component(FALLBACK))
+        font.addGlyph(glyph)
+    for codepoint, level in inserts.shrunk_glyphs:
+        sign = names.signs[codepoint]
+        scale, x, y = L.shrink(sign.box, level)
+        # the lone glyph was lifted: its outline is scaled with its lift
+        offset = (x, L._round(y + sign.lift - scale * sign.lift))
+        glyph = Glyph(inserts.shrunk(codepoint, level), width=sign.advance)
+        glyph.components.append(Component(sign.name, (scale, 0, 0, scale, *offset)))
+        font.addGlyph(glyph)
+    for name in inserts.markers():
+        font.addGlyph(Glyph(name, width=0))
+    return inserts.bases()

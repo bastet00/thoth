@@ -49,6 +49,8 @@ The rules, each stated once:
     group is wider than MAX_WIDTH half units or higher than MAX_HEIGHT
     units, is drawn unstacked: every sign as a lone sign, every control as
     its fallback box.
+10. A sign, a corner insertion control and a sign put the second sign into
+    a corner of the first (section 6, rules I1 to I6).
 
 Rounding. The font can only add whole numbers that its glyphs carry, so
 every position here is such a sum, rounded as the font rounds it: a unit
@@ -65,6 +67,7 @@ component may differ from ink_box(), by its own rounding: at most 2.
 import math
 from collections import namedtuple
 
+from fontTools.pens.basePen import BasePen
 from fontTools.pens.boundsPen import BoundsPen
 
 # --- 1. Constants -----------------------------------------------------------
@@ -160,9 +163,10 @@ def is_sign(codepoint):
 # (xMin, yMin, xMax, yMax); cell: (width, height) in half units and units,
 # the size class;
 # scales: the scale of the sign in a group, one for each level; lift: how
-# far the lone sign is moved up (rule 1). The font bakes scales into the
-# variants of the sign and lift into its lone glyph.
-Sign = namedtuple("Sign", "name advance box cell scales lift")
+# far the lone sign is moved up (rule 1); corners: its free corners, for
+# insertion (section 6). The font bakes scales into the variants of the
+# sign and lift into its lone glyph.
+Sign = namedtuple("Sign", "name advance box cell scales lift corners")
 
 
 def sign_table(font):
@@ -188,7 +192,7 @@ def sign_table(font):
         cell = sign_cell(box)
         scales = tuple(sign_scale(box, cell, level) for level in range(len(LEVEL_HEIGHTS)))
         table[codepoint] = Sign(glyph.name, glyph.width, box, cell, scales,
-                                sign_lift(box, cell))
+                                sign_lift(box, cell), sign_corners(font, glyph, box, codepoint))
     return table
 
 
@@ -338,6 +342,9 @@ def layout(codepoints, signs):
     clusters = []
     for start, end in runs(codepoints):
         run = codepoints[start:end]
+        if is_insertion(run):  # section 6
+            clusters.append(_inserted(start, end, run, signs))
+            continue
         group = parse(run)
         level = fit_level(*measure(group, signs)[:2]) if group else None
         if level is not None and len(run) > 1:
@@ -452,3 +459,318 @@ def ink_box(glyph, signs):
         glyph.x + glyph.scale * box[0], glyph.y + glyph.scale * box[1],
         glyph.x + glyph.scale * box[2], glyph.y + glyph.scale * box[3],
     )
+
+
+# --- 6. Corner insertion ----------------------------------------------------
+#
+# The controls U+13432..13435 put the sign after them into a corner of the
+# sign before them, "within the frame of the preceding hieroglyph" (Unicode
+# core specification, chapter 11, "Egyptian Hieroglyph Format Controls",
+# figure 11-2; grammar in L2/21-248, table 1). Start is the side where the
+# line starts, the left in left-to-right text, where the signs of the code
+# charts face; end is the right, where a bird has its back and tail. The
+# base comes first in the text even where the inserted sign is read first.
+# The owner's rule (O5, decisions 004 and 005): a bird takes at most one
+# small sign, inside its own block at the top end, over its back, and the
+# bird may shrink a little to give that sign room.
+#
+# The rules, each stated once:
+#
+# I1. A run (section 4) that is exactly a sign, a corner control and a sign
+#     is an insertion, drawn as one block with the advance of the base as
+#     the source has it: an insertion never widens the line. Any other run
+#     with a corner control is not well formed and is drawn unstacked, the
+#     control as its box (rule 9): a base inside a joiner group, an inserted
+#     group, a second insertion on the same base, a control without a sign
+#     on both sides, two corner controls in a row. Like every stacked group,
+#     an insertion is one cluster for text engines.
+# I2. Each sign has, for each corner and each shape of inserted sign (flat:
+#     ink at least as wide as high; tall), a zone: a free rectangle in the
+#     sign's frame with one corner on the corner of the frame. The frame is
+#     the ink box, but a sign that is not low and whose ink reaches TALL or
+#     higher reaches up to FRAME_TOP, the height of the tallest signs (a
+#     bird's quadrat). The highest ink (top corners) or the lowest ink
+#     (bottom corners) in vertical strips of STRIP gives the free depth of
+#     each strip; of the rectangles this allows, the one holding the largest
+#     box of the shape (2:1 flat, 1:2 tall) is taken, the larger one of
+#     equals. A zone keeps GAP from the ink, is at most a quarter block
+#     (ZONE_CAP) and is counted in whole STEPs, rounded down. Its anchor is
+#     the middle of its bottom edge.
+# I3. A sign whose cell (rule 2) is at most INSERT_CELL can be inserted. It
+#     is drawn as its variant (its scale in a group) at the largest of
+#     INSERT_LEVELS at which its ink fits the zone of its shape. Its size
+#     class is its ink at each of those levels, in STEPs, rounded up; it
+#     fits where both are at most the zone's.
+# I4. A bird may shrink: if the inserted sign fits a bird only at the last
+#     of INSERT_LEVELS (half size), the bird is drawn at the scale of the
+#     first of SHRINK_LEVELS at which the inserted sign reaches WANTED_LEVEL
+#     or a larger level, its ink centred where it was and its ink bottom
+#     where it was; its zones are found again from the shrunk outline, in
+#     the frame of the full-size sign. If no shrink reaches WANTED_LEVEL,
+#     the bird keeps its size. The block keeps the full-size advance. A
+#     sign that fits the full-size bird at no level is not a reason to
+#     shrink it (rule I6).
+# I5. The inserted sign is centred on the middle of the zone. In a top
+#     corner it stands GAP above the highest ink under it, its width counted
+#     in whole units (at most the zone's) and widened by GAP on both sides,
+#     so that it sits on the bird's back and not up in the zone (never above
+#     the zone's bottom, which is GAP above the highest ink under the whole
+#     zone). In a bottom corner it stands on the base's line, the bottom of
+#     its ink. The font has one anchor per base, corner, shape and width.
+# I6. Where the inserted sign is larger than INSERT_CELL, or the base has
+#     no zone in that corner, or the sign fits it at no level, the control
+#     is a horizontal joiner: the two signs stand side by side as a flat
+#     group (rules 2 to 8).
+#
+# Why these values.
+# - Strips of 15 follow the slope of a bird's back; half units (45) as the
+#   step keep the bread over the vulture one level larger than whole units.
+# - The cap is the owner's "quarter block", half the quadrat each way; without
+#   it an empty corner (the right half of the reed) would take a full sign.
+# - Inserted levels 2 to 5 (0.75 to 0.5): larger, the sign on a big bird's
+#   back reads as a second sign; smaller, two strokes are a blot at 26 px.
+# - A bird shrinks to level 1 (0.86) or 2 (0.74) only, and only when the
+#   inserted sign would otherwise be at half size, to reach level 4 (0.6):
+#   the owner's answer to decision 005. Other signs never shrink: a tall
+#   sign drawn smaller has room on top for anything, which is a stack, not
+#   an insertion, and each shrunk sign is one more glyph in the font.
+# - Cells up to 9 by 9 units (18 half units wide): the small signs the owner's dictionary puts
+#   into a bird's corner (X1, Z1, Z4, W24, N29, O49, V31...); larger ones
+#   would only fit at half size into the largest corners, and each
+#   insertable sign costs anchors in the font.
+# - FRAME_TOP and TALL: only signs that nearly fill the quadrat get the room
+#   up to it; over a short sign (Aa1, N5) a "zone" would be a stack.
+
+TOP_START, BOTTOM_START, TOP_END, BOTTOM_END = 0x13432, 0x13433, 0x13434, 0x13435
+CORNERS = {  # control: (top, end)
+    TOP_START: (True, False), BOTTOM_START: (False, False),
+    TOP_END: (True, True), BOTTOM_END: (False, True),
+}
+SHAPES = {"flat": (2, 1), "tall": (1, 2)}
+STRIP = 15  # the width of the strips in which an outline is measured
+STEP = UNIT // 2  # zones and size classes are counted in half units: 45
+ZONE_CAP = (WIDTH_LIMIT * STEP // 2 // STEP, HEIGHT_LIMIT * UNIT // 2 // STEP)  # 14 by 12 steps
+FRAME_TOP = 1035  # a top corner of a tall sign reaches this high
+TALL = 945
+INSERT_CELL = (18, 9)  # half units, units: the largest cell an inserted sign may have
+INSERT_LEVELS = (2, 3, 4, 5)
+WANTED_LEVEL = 4
+SHRINK_LEVELS = (1, 2)
+BIRDS = range(0x1313F, 0x1317F)  # Gardiner G1 to G54: the signs that may shrink
+
+# width, height: the zone in STEPs, (0, 0) if the corner has no room; x, y:
+# its anchor, the middle of its bottom edge, in the coordinates of the sign
+# as the source draws it (not lifted); seats: the height at which an
+# inserted sign 1, 2, ... units wide stands (rule I5).
+Zone = namedtuple("Zone", "width height x y seats")
+NO_ZONE = Zone(0, 0, 0, 0, ())
+
+
+def shrink(box, level):
+    """Rule I4: (scale, x, y) of a base drawn smaller at a level: its ink
+    centred where it was and its ink bottom where it was."""
+    scale = math.floor(unit(level) / UNIT * 1000) / 1000
+    return (scale, _round((box[0] + box[2]) / 2 * (1 - scale)), _round(box[1] * (1 - scale)))
+
+
+def sign_corners(font, glyph, box, codepoint):
+    """Rules I2 and I4: {control: ({shape: Zone} of the sign, and for a bird
+    of the sign at each of SHRINK_LEVELS)}."""
+    lift = sign_lift(box, sign_cell(box))
+    top = max(box[3], FRAME_TOP) if box[3] >= TALL and not lift else box[3]
+    frame = (box[0], box[1], box[2], top)
+    corners = {control: [] for control in CORNERS}
+    for level in (0, *SHRINK_LEVELS) if codepoint in BIRDS else (0,):
+        high, low = _envelope(font, glyph, frame, shrink(box, level) if level else (1, 0, 0))
+        for control, (at_top, end) in CORNERS.items():
+            corners[control].append({shape: _zone(high, low, frame, at_top, end, ratio)
+                                     for shape, ratio in SHAPES.items()})
+    return {control: tuple(zones) for control, zones in corners.items()}
+
+
+class _Envelope(BasePen):
+    """The highest and the lowest ink of an outline in each strip of a frame."""
+
+    def __init__(self, glyphset, x_min, count, transform):
+        super().__init__(glyphset)
+        self.x_min, self.transform = x_min, transform
+        self.high, self.low = [-math.inf] * count, [math.inf] * count
+        self.start = self.point = None
+
+    def _moveTo(self, point):
+        self.start = self.point = self._place(point)
+
+    def _place(self, point):
+        scale, dx, dy = self.transform
+        return (point[0] * scale + dx, point[1] * scale + dy)
+
+    def _segment(self, point):
+        (x0, y0), (x1, y1) = sorted((self.point, point))
+        self.point = point
+        first = max(0, int((x0 - self.x_min) // STRIP))
+        last = min(len(self.high) - 1, int((x1 - self.x_min) // STRIP))
+        for strip in range(first, last + 1):
+            left = max(x0, self.x_min + strip * STRIP)
+            right = max(left, min(x1, self.x_min + (strip + 1) * STRIP))
+            if x1 == x0:
+                ends = (y0, y1)
+            else:
+                ends = tuple(y0 + (y1 - y0) * (x - x0) / (x1 - x0) for x in (left, right))
+            self.high[strip] = max(self.high[strip], *ends)
+            self.low[strip] = min(self.low[strip], *ends)
+
+    def _lineTo(self, point):
+        self._segment(self._place(point))
+
+    def _curveToOne(self, a, b, c):
+        p, a, b, c = self.point, self._place(a), self._place(b), self._place(c)
+        for i in range(1, 17):  # sixteen chords are within a unit of the curve
+            t, u = i / 16, 1 - i / 16
+            self._segment(tuple(u ** 3 * p[n] + 3 * u * u * t * a[n] + 3 * u * t * t * b[n] + t ** 3 * c[n]
+                                for n in (0, 1)))
+
+    def _qCurveToOne(self, a, b):
+        p, a, b = self.point, self._place(a), self._place(b)
+        for i in range(1, 9):
+            t, u = i / 8, 1 - i / 8
+            self._segment(tuple(u * u * p[n] + 2 * u * t * a[n] + t * t * b[n] for n in (0, 1)))
+
+    def _closePath(self):
+        if self.point != self.start:
+            self._segment(self.start)
+
+
+_envelopes = {}  # measured outlines, by everything the measure depends on
+
+
+def _envelope(font, glyph, frame, transform):
+    """(high, low): the highest and lowest ink in each strip of the frame,
+    counted from its left edge; -inf and inf where a strip has no ink."""
+    outline = (tuple((p.x, p.y, p.segmentType) for contour in glyph.contours for p in contour),
+               tuple((c.baseGlyph, tuple(c.transformation)) for c in glyph.components))
+    key = (outline, frame, transform, STRIP)
+    if outline[1] or key not in _envelopes:  # components: measured every time
+        pen = _Envelope(font, frame[0], math.ceil((frame[2] - frame[0]) / STRIP), transform)
+        glyph.draw(pen)
+        _envelopes[key] = (tuple(pen.high), tuple(pen.low))
+    return _envelopes[key]
+
+
+def _zone(high, low, frame, top, end, ratio):
+    """Rules I2 and I5: the zone of one corner for one shape."""
+    x_min, y_min, x_max, y_top = frame
+    width, height, count = x_max - x_min, y_top - y_min, len(high)
+    # the ink each strip has under (over) the zone: y_min - GAP (y_top + GAP) if none
+    if top:
+        ink = [y_min - GAP if y == -math.inf else y for y in high]
+        free = [y_top - y for y in ink]
+    else:
+        ink = [y_top + GAP if y == math.inf else y for y in low]
+        free = [y - y_min for y in ink]
+    order = range(count - 1, -1, -1) if end else range(count)
+    best, best_key, depth = None, None, math.inf
+    for strip in order:
+        depth = min(depth, free[strip])
+        if depth <= GAP:
+            break
+        covered = x_max - (x_min + strip * STRIP) if end else min(width, (strip + 1) * STRIP)
+        # GAP on the inner sides; a side on the edge of the frame faces no ink
+        zw = min(ZONE_CAP[0], (covered - (GAP if covered < width else 0)) // STEP)
+        zh = min(ZONE_CAP[1], (depth - GAP) // STEP)
+        if zw <= 0 or zh <= 0:
+            continue
+        key = (min(zw / ratio[0], zh / ratio[1]), zw * zh)
+        if best_key is None or key > best_key:
+            best, best_key = (int(zw), int(zh), depth), key
+    if best is None:
+        return NO_ZONE
+    zw, zh, depth = best
+    x = _round(x_max - zw * STEP / 2 if end else x_min + zw * STEP / 2)
+    if not top:  # on the bottom of the frame, the base's line
+        return Zone(zw, zh, x, y_min, (y_min,) * ((zw + 1) // 2))
+
+    def seat(n):  # GAP above the highest ink under n STEPs, widened by GAP
+        left, right = x - n * STEP / 2 - GAP, x + n * STEP / 2 + GAP
+        under = [ink[s] for s in range(count)
+                 if x_min + (s + 1) * STRIP > left and x_min + s * STRIP < right]
+        return math.ceil(max(under, default=y_min - GAP)) + GAP
+
+    # the zone itself stands GAP above the highest ink under it
+    seats = tuple(seat(min(2 * units, zw)) for units in range(1, (zw + 1) // 2 + 1))
+    return Zone(zw, zh, x, math.ceil(y_top - depth) + GAP, seats)
+
+
+def is_insertion(run):
+    """Rule I1: a sign, a corner control, a sign, and nothing else."""
+    return len(run) == 3 and run[1] in CORNERS and is_sign(run[0]) and is_sign(run[2])
+
+
+def shape_of(sign):
+    """Flat if its ink is at least as wide as high, else tall."""
+    return "flat" if sign.box[2] - sign.box[0] >= sign.box[3] - sign.box[1] else "tall"
+
+
+def insert_size(sign, level):
+    """Rule I3: the size class of an inserted sign at a level, (width,
+    height) of its ink in STEPs, rounded up."""
+    scale = sign.scales[level]
+    return tuple(math.ceil(round(size * scale, 6) / STEP)
+                 for size in (sign.box[2] - sign.box[0], sign.box[3] - sign.box[1]))
+
+
+def seat_width(size):
+    """Rule I5: the width of an inserted sign of this size class, in whole
+    units: the width its seat is found for."""
+    return (size[0] + 1) // 2
+
+
+def insertable(sign):
+    """Rule I3: a sign small enough to be inserted."""
+    return sign.cell[0] <= INSERT_CELL[0] and sign.cell[1] <= INSERT_CELL[1]
+
+
+def insert_level(zone, sign):
+    """Rule I3: the largest of INSERT_LEVELS at which the sign fits the zone,
+    or None."""
+    for level in INSERT_LEVELS:
+        width, height = insert_size(sign, level)
+        if width <= zone.width and height <= zone.height:
+            return level
+    return None
+
+
+def insertion(base, control, inserted, signs):
+    """Rules I3, I4 and I6: (level of the base, level of the inserted sign),
+    or None if the control is to be a horizontal joiner."""
+    sign = signs[inserted]
+    if not insertable(sign):
+        return None
+    full, *shrunk = (zones[shape_of(sign)] for zones in signs[base].corners[control])
+    level = insert_level(full, sign)
+    if level == INSERT_LEVELS[-1]:
+        for base_level, zone in zip(SHRINK_LEVELS, shrunk):  # only birds have these
+            found = insert_level(zone, sign)
+            if found is not None and found <= WANTED_LEVEL:
+                return base_level, found
+    return None if level is None else (0, level)
+
+
+def _inserted(start, end, run, signs):
+    """Rules I1 to I6: the block of an insertion."""
+    base, control, inserted = run
+    found = insertion(base, control, inserted, signs)
+    if found is None:  # I6
+        group = ((base, inserted),)
+        return _stacked(start, end, group, fit_level(*measure(group, signs)[:2]), signs)
+    level, inner = found
+    b, sign = signs[base], signs[inserted]
+    zone = b.corners[control][(0, *SHRINK_LEVELS).index(level)][shape_of(sign)]
+    if level:
+        scale, x, y = shrink(b.box, level)
+        drawn = Glyph(base, x, y + b.lift, level, scale)
+    else:
+        drawn = Glyph(base, 0, b.lift, 0, 1.0)
+    dx, dy = sign_offset(sign, inner)
+    seat = zone.seats[seat_width(insert_size(sign, inner)) - 1]
+    glyph = Glyph(inserted, zone.x + dx, b.lift + seat + dy, inner, sign.scales[inner])
+    return Cluster(start, end, b.advance, (drawn, glyph), True)

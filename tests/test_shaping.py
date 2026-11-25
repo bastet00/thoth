@@ -50,9 +50,10 @@ NAMES = glyphs.Names(SIGNS, SOURCE)
 V, H = L.VERTICAL_JOINER, L.HORIZONTAL_JOINER
 FALLBACK = "control.fallback"
 
-# Limits for the budget test, set from the build with widths in half units
-# (12,398 glyphs, 1,083,928 bytes TTF, 392,760 bytes WOFF2) with a little room.
-MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 12_600, 1_110_000, 405_000
+# Limits for the budget test, set from the build with corner insertion
+# (12,554 glyphs, 1,165,772 bytes TTF, 420,928 bytes WOFF2; without it
+# 12,398, 1,083,928 and 392,620) with a little room.
+MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 12_750, 1_200_000, 435_000
 
 # Egyptological transliteration, beyond the basic Latin set.
 TRANSLITERATION = [
@@ -151,6 +152,7 @@ class Shaper:
         self.lone = {sign.name: c for c, sign in SIGNS.items()}
         self.variants = {NAMES.variant(c, k): (c, k) for c in SIGNS for k in glyphs.LEVELS}
         self.boxes = {glyphs.control_name(c): c for c in glyphs.CONTROLS}
+        self.shrunk = {NAMES.inserts.shrunk(c, k): (c, k) for c, k in NAMES.inserts.shrunk_glyphs}
 
     def shape(self, codepoints, level=hb.BufferClusterLevel.MONOTONE_CHARACTERS, tracking=0):
         """[(glyph, cluster, x, y, advance)], x from the start of the line;
@@ -185,6 +187,8 @@ class Shaper:
             return self.variants[name]
         if name in self.boxes:
             return self.boxes[name], None
+        if name in self.shrunk:  # a bird drawn smaller for an insertion
+            return self.shrunk[name]
         return None
 
     def compare(self, codepoints):
@@ -217,12 +221,19 @@ class Shaper:
                 problems.append(f"cluster at {c.start}: {len(seen)} glyphs drawn, reference {len(c.glyphs)}")
                 continue
             problems += self.clusters(c, [shaped[i][1] for i in mine])
-            for ((codepoint, level), x, y, glyph_advance), glyph in zip(seen, c.glyphs):
-                if codepoint != glyph.codepoint or (level if c.stacked else None) != level:
+            run = codepoints[c.start:c.end]
+            inserted = c.stacked and L.is_insertion(run) and L.insertion(*run, SIGNS) is not None
+            for index, (((codepoint, level), x, y, glyph_advance), glyph) in enumerate(zip(seen, c.glyphs)):
+                # the base of an insertion is its lone glyph, or at a level its shrunk glyph
+                lone = not c.stacked or (inserted and index == 0 and not glyph.level)
+                if codepoint != glyph.codepoint or (None if lone else glyph.level) != level:
                     problems.append(f"U+{codepoint:X} at level {level}, reference U+{glyph.codepoint:X}"
-                                    f" at {glyph.level if c.stacked else 'none (lone)'}")
+                                    f" at {'none (lone)' if lone else glyph.level}")
                     continue
-                if c.stacked:
+                if inserted and index == 0 and not lone:  # the shrink is baked into the glyph
+                    _, dx, dy = L.shrink(SIGNS[codepoint].box, level)
+                    expected = (glyph.x - dx, glyph.y - dy - SIGNS[codepoint].lift)
+                elif not lone:
                     dx, dy = L.sign_offset(SIGNS[codepoint], level)  # baked into the variant
                     expected = (glyph.x - dx, glyph.y - dy)
                 else:  # the lift is baked into the lone glyph
@@ -372,9 +383,22 @@ def test_glyphs(shaper):
         found = bounds(shaper, name)
         worst = max(worst, *(abs(a - b) for a, b in zip(found, expected)))
     check(worst <= 2, f"a variant's ink is {worst:.2f} units from the reference")
-    markers = [*NAMES.markers(), *(n for k in glyphs.LEVELS for n in NAMES.leveled(k)
-                                   if n not in shaper.variants)]
+    markers = [*NAMES.markers(), *NAMES.inserts.markers(),
+               *(n for k in glyphs.LEVELS for n in NAMES.leveled(k) if n not in shaper.variants)]
     check(all(hmtx[m][0] == 0 and not outline(shaper, m) for m in markers), "a marker draws or advances")
+    # a shrunk bird (layout rule I4): one component, its bird scaled and
+    # moved as layout.shrink() says, with the bird's advance
+    for name, (codepoint, level) in shaper.shrunk.items():
+        sign = SIGNS[codepoint]
+        (component,) = glyf[name].components
+        scale, x, y = L.shrink(sign.box, level)
+        transform = getattr(component, "transform", [[1, 0], [0, 1]])
+        check(component.glyphName == sign.name and abs(transform[0][0] - scale) < 1 / 16384
+              and (component.x, component.y) == (x, L._round(y + sign.lift - scale * sign.lift))
+              and hmtx[name][0] == sign.advance, f"{name}: {component.glyphName} at {transform}")
+    for name in NAMES.inserts.candidates():  # a candidate that no rule takes shows the box
+        check(outline(shaper, name) == outline(shaper, FALLBACK) and hmtx[name][0] == L.CONTROL_ADVANCE,
+              f"{name} is not the fallback box")
     heads = NAMES.heads()
     check(all(not outline(shaper, h) for h in heads), "a group head draws something")
     print(f"  {len(shaper.variants)} variants (ink at most {worst:.2f} units off), "
@@ -518,6 +542,104 @@ def test_mixed(shaper):
     print(f"  mixed lines: {compared} compared, {failed} differ")
 
 
+# Corner insertion (layout section 6). The owner's words as golden lines of
+# the font (written here, not read from the font or from layout.py), then
+# every bird with X1 and with Z1 at top end, all four corners on a sample
+# of bases, the fallbacks and malformed text, and seeded random insertions
+# in random lines, each compared with the reference glyph by glyph, which
+# includes one cluster per block and letter spacing (compare()).
+TS, BS, TE, BE = 0x13432, 0x13433, 0x13434, 0x13435
+INSERT_WORDS = {  # mdc: (advance of the line, [(glyph, x, y)] of the glyphs that draw)
+    # mwt: the vulture shrinks to level 1 so that the bread reaches level 2
+    "G14<13434>X1-B1": (1732, [("u13150.shrink1", 0, 0), ("_2.u133CF", 781, 798), ("u13050", 1055, 0)]),
+    "G43<13434>X1": (860, [("u13171.shrink1", 0, 0), ("_3.u133CF", 631, 769)]),  # quail chick
+    "G1<13434>X1": (985, [("u1313F", 0, 0), ("_3.u133CF", 757, 836)]),  # vulture G1
+    "G17<13434>X1": (1116, [("u13153", 0, 0), ("_2.u133CF", 842, 751)]),  # owl
+    "G39<13434>Z1": (1248, [("u1316D", 0, 0), ("_2.u133E4", 1042, 431)]),  # s3
+    "M23-G14<13434>X1-N35-G17-D21-D31": (  # the TLA word, the bread over the vulture's back
+        5953, [("u131D3", 0, 0), ("u13150.shrink1", 668, 0), ("_2.u133CF", 1449, 798), ("u13216", 1723, 0),
+               ("u13153", 2920, 0), ("u1308B", 4036, 0), ("u13096", 5213, 0)]),
+}
+
+INSERT_UNSTACKED = [  # what v1 draws unstacked, the corner control as its box (rule I1)
+    "N35:G14<13434>X1", "G14<13434>X1:N35", "A1*G14<13434>X1",  # a base in a joiner group
+    "G14<13434>X1*Z1", "G14<13434>X1:Z1",  # an inserted group
+    "G14<13434>X1<13433>Z1", "G14<13434>X1<13434>Z1", "G14<13434>Z1<13434>X1",  # a second insertion
+    "<13434>X1", "G14<13434>", "<13434>", "G14<13434><13434>X1", "G14<13434><13433>X1",  # malformed
+    'G14<13434>"\u200d"X1', 'G14"\u200d"<13434>X1', 'G14<13434>" "X1', 'G14<13434>"\u200c"X1',
+    "G14<13434>X1<13436>Z1", "<13437>G14<13434>X1<13438>",  # unsupported controls
+]
+INSERT_SIDE_BY_SIDE = [  # no room, or too large: the control is a horizontal joiner (rule I6)
+    "D21<13434>X1", "G14<13434>A1", "G25<13435>Aa1", "I10<13433>D46", "N35<13432>X1",
+]
+
+
+def test_insertion(shaper):
+    texts, outcomes = [], {}
+
+    def add(text):
+        texts.append(text)
+        run = [c for c in text if L.is_sign(c) or c in L.CONTROLS]
+        if len(run) == 3 and L.is_insertion(run):
+            found = L.insertion(*run, SIGNS)
+            key = "side by side" if found is None else ("shrinks" if found[0] else "fits")
+            outcomes[key] = outcomes.get(key, 0) + 1
+
+    birds = [c for c in L.BIRDS if c in SIGNS]
+    x1, z1 = gardiner("X1"), gardiner("Z1")
+    for bird in birds:
+        for sign in (x1, z1):
+            add([bird, TE, sign])
+    bases = [gardiner(g) for g in ("A1", "D21", "G1", "G17", "G39", "G43", "I10", "N35", "O1",
+                                    "M17", "Q3", "F35", "D58", "R4", "W24", "X1", "Aa1")] + [0x13441, 0x13444]
+    signs = [gardiner(g) for g in ("X1", "Z1", "Z4", "N35", "Q3", "W24", "N29", "O49", "V31", "D21", "Z2")]
+    for base in bases:
+        for control in L.CORNERS:
+            for sign in signs:
+                add([base, control, sign])
+    for mdc in INSERT_SIDE_BY_SIDE:
+        text = encode(mdc)
+        run = [c for c in text if L.is_sign(c)]
+        check(L.layout(text, SIGNS) == L.layout([run[0], H, run[1]], SIGNS), f"{mdc}: not side by side")
+        add(text)
+    for mdc in INSERT_UNSTACKED:
+        text = encode(mdc)
+        check(not any(c.stacked for c in L.layout(text, SIGNS)), f"{mdc}: stacked")
+        add(text)
+    rng = random.Random(17)
+    codepoints = sorted(SIGNS)
+    small = [c for c in codepoints if L.insertable(SIGNS[c])]
+    for _ in range(1500):  # any base, corner and sign; mostly signs small enough
+        add([rng.choice(codepoints), rng.choice(list(L.CORNERS)), rng.choice(small if rng.random() < 0.8 else codepoints)])
+    roomy = sorted({(base, control) for base, _, control, _ in NAMES.inserts.zones})
+    for _ in range(1500):  # a base and corner with room for some sign, and a small sign
+        add([*rng.choice(roomy), rng.choice(small)])
+    for _ in range(300):  # and among other text
+        line = []
+        for _ in range(rng.randint(1, 4)):
+            kind = rng.random()
+            if kind < 0.5:
+                line += [rng.choice(birds + small), rng.choice(list(L.CORNERS)), rng.choice(small)]
+            elif kind < 0.7:
+                line += group([[rng.choice(small)], [rng.choice(codepoints)]])
+            elif kind < 0.85:
+                line.append(rng.choice(codepoints))
+            else:
+                line += map(ord, rng.choice((" ", " ꜥnḫ ", "\u200d", ".")))
+        texts.append(line)
+    for mdc, expected in INSERT_WORDS.items():
+        text = encode(mdc)
+        shaped = shaper.shape(text)
+        found = (sum(g[4] for g in shaped), [(g[0], g[2], g[3]) for g in shaped if shaper.drawn(g[0])])
+        check(found == expected, f"{mdc}: {found}, expected {expected}")
+        texts.append(text)
+    compared, failed = compare_all(shaper, texts)
+    blocks = sum(1 for text in texts for c in L.layout(text, SIGNS)
+                 if L.is_insertion(text[c.start:c.end]) and L.insertion(*text[c.start:c.end], SIGNS))
+    print(f"  insertions: {compared} texts compared, {failed} differ; {blocks} inserted blocks, each one cluster; "
+          + ", ".join(f"{k}: {v}" for k, v in sorted(outcomes.items())))
+
+
 def glyphs_of(lookup, names):
     """Every glyph name a lookup refers to (coverages, classes, outputs)."""
     found = set()
@@ -546,7 +668,8 @@ def test_lookups(shaper):
     or a glyph of the generator; mark and mkmk lookups are one or the other."""
     font = shaper.font
     egyptian = {*shaper.lone, *shaper.boxes, *shaper.variants, FALLBACK, *NAMES.joined.values(),
-                *NAMES.heads(), *NAMES.markers(), *(n for k in glyphs.LEVELS for n in NAMES.leveled(k))}
+                *NAMES.heads(), *NAMES.markers(), *(n for k in glyphs.LEVELS for n in NAMES.leveled(k)),
+                *NAMES.inserts.bases(), *NAMES.inserts.markers()}
     shared = {".notdef", "space", NAMES.dotted_circle, NAMES.zwnj, *NAMES.ignorables}
     names = set(shaper.order)
     for tag in ("GSUB", "GPOS"):
@@ -588,7 +711,7 @@ def main():
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "fonts/ttf/Thoth-Regular.ttf"
     shaper = Shaper(path)
     tests = (test_cmap, test_lone_signs, test_controls, test_glyphs, test_golden, test_words,
-             test_groups, test_malformed, test_mixed, test_lookups, test_budget)
+             test_groups, test_insertion, test_malformed, test_mixed, test_lookups, test_budget)
     for test in tests:
         try:
             test(shaper)
