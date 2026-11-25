@@ -21,7 +21,7 @@ The rules, each stated once:
  3. A row (signs joined horizontally) is as wide as its cells together and
     as high as its highest cell. A group (rows joined vertically) is as
     wide as its widest row and as high as its rows together.
- 4. The whole group is drawn at one level: the largest of eight at which it
+ 4. The whole group is drawn at one level: the largest of seven at which it
     is at most WIDTH_LIMIT by HEIGHT_LIMIT units of full size. Most groups
     fit at level 0, so their signs are as large as the lone signs next to
     them.
@@ -71,9 +71,9 @@ UNIT = 90  # the grid: cells are whole units wide and high
 GAP = 34  # least distance between the ink of two neighbours, at every level
 HEIGHT_LIMIT = 12  # units the quadrat is high
 WIDTH_LIMIT = 14  # units the quadrat is wide
-LEVEL_HEIGHTS = (12, 14, 16, 18, 20, 24, 36, 48)  # one scale level for each:
+LEVEL_HEIGHTS = (12, 14, 16, 18, 20, 24, 36)  # one scale level for each:
 # the height in units that the level brings down to HEIGHT_LIMIT
-MAX_WIDTH, MAX_HEIGHT = 32, 40  # units: a larger group is not stacked
+MAX_WIDTH, MAX_HEIGHT = 32, 36  # units: a larger group is not stacked
 MAX_JUSTIFY = 6  # units: the most a justified row of two may leave free
 LOW_HEIGHT = 6  # units: a lone sign or a single row up to this high is centred
 MIDDLE = (HEIGHT_LIMIT * UNIT - GAP) // 2  # the middle line of the quadrat: 523
@@ -93,14 +93,17 @@ SIDE_BEARING = 49  # the side bearing of the signs in the source
 #   at (26 pixels to the em); with less, neighbours run together there. It
 #   is the same at every level because the pixel is. With a unit of 90 it
 #   is also the largest gap that leaves the stroke (416 high) in five units.
-# - Eight levels from 1.0 to 0.244: halves, thirds and quarters for two,
-#   three and four full rows, and 14, 16, 18 and 20 units because that is
-#   where real groups are. The price: the level of a group inside a group
+# - Seven levels from 1.0 to 0.333: halves and thirds for two and three
+#   full rows, and 14, 16, 18 and 20 units because that is where real
+#   groups are. An eighth level (48 units, a quarter) was used by no group
+#   of the dictionary and cost 1,078 glyphs, about 46 KB of the font
+#   (milestone 3b). The price: the level of a group inside a group
 #   (a later milestone) comes from a table of products rounded down to a
 #   level, not from a sum.
 # - The caps are the largest group of the owner's dictionary (9,330 groups
-#   in 10,224 words), 29 units wide and 36 high, plus three and four units.
-#   The font needs no state for sizes beyond them.
+#   in 10,224 words), 29 units wide and 36 high: three units more across,
+#   and as high as the lowest level, three full rows, allows. The font
+#   needs no state for sizes beyond them.
 # - Six units free let the bread and the stool of "offering" reach the ends
 #   of the table above them, and keep two strokes under a water sign (nine
 #   units free) together.
@@ -109,7 +112,7 @@ SIDE_BEARING = 49  # the side bearing of the signs in the source
 
 
 def unit(level):
-    """The unit at a level, in font units: 90, 77, 67, 60, 54, 45, 30, 22."""
+    """The unit at a level, in font units: 90, 77, 67, 60, 54, 45, 30."""
     return HEIGHT_LIMIT * UNIT // LEVEL_HEIGHTS[level]
 
 
@@ -293,14 +296,17 @@ def measure(group, signs):
 
 
 def fit_level(width, height):
-    """Rules 4 and 9: the level of a group of this size in units, or None."""
+    """Rules 4 and 9: the level of a group of this size in units, or None.
+
+    Width and height are fitted on their own; the group takes the smaller
+    of the two scales, which is the larger level."""
     if width > MAX_WIDTH or height > MAX_HEIGHT:
         return None
-    return next(
-        level for level in range(len(LEVEL_HEIGHTS))
-        if width * unit(level) <= WIDTH_LIMIT * UNIT
-        and height * unit(level) <= HEIGHT_LIMIT * UNIT
-    )
+    return max(_fit_one(width, WIDTH_LIMIT), _fit_one(height, HEIGHT_LIMIT))
+
+
+def _fit_one(size, limit):
+    return next(level for level in range(len(LEVEL_HEIGHTS)) if size * unit(level) <= limit * UNIT)
 
 
 def layout(codepoints, signs):
@@ -329,52 +335,89 @@ def _unstacked(index, codepoint, signs):
     return Cluster(index, index + 1, advance, (Glyph(codepoint, 0, lift, 0, 1.0),), False)
 
 
+# The shares a position is made of (see Rounding above). Each is a whole
+# number that one glyph of the font can carry, and the font adds them up
+# exactly as _stacked() does; the generator calls these same functions.
+
+def advance(width, step):
+    """Rule 8: the advance of a group `width` units wide."""
+    return width * step - GAP + 2 * SIDE_BEARING
+
+
+def centre(width, step):
+    """The axis of a group, from its start: its cells begin half a gap left
+    of the side bearing."""
+    return SIDE_BEARING - GAP // 2 + half(width, step)
+
+
+def half(units, step):
+    """Half of a length in units, rounded down."""
+    return units * step // 2
+
+
+def slack(row, width, row_width):
+    """Rule 6: the units a row of two leaves free when it is justified, else 0."""
+    free = width - row_width
+    return free if len(row) == 2 and 0 < free <= MAX_JUSTIFY else 0
+
+
+def span(count, height, step):
+    """Rule 7: (top, bottom) of a group of `count` rows `height` units high.
+
+    The first row hangs from top, each further row hangs under the one
+    before it, and the last row stands on bottom."""
+    top = HEIGHT_LIMIT * UNIT
+    spare = top - height * step
+    if count == 1:
+        bottom = spare // 2 if height <= LOW_HEIGHT else 0
+        return bottom + height * step, bottom
+    if count == 2:
+        margin = min((spare + GAP) // 4, spare // 2)
+        return top - margin, margin
+    return top - spare // 2, spare - spare // 2
+
+
+def sign_offset(sign, level):
+    """Rule 6: where a sign's outline goes from the centre of the bottom of
+    its cell (x to the nearest, y so that its ink stands on the bottom).
+    The font bakes it into the variant of the sign."""
+    scale = sign.scales[level]
+    x_min, y_min, x_max, _ = sign.box
+    return -_round(scale * (x_min + x_max) / 2), -_round(scale * y_min)
+
+
 def _stacked(start, end, group, level, signs):
     """Rules 6 to 8: place the signs of a group that fits at this level.
 
-    The cells of the group start half a gap left of its ink and on the
-    baseline; the quadrat is HEIGHT_LIMIT units of full size above it.
+    Each row starts at its left edge, half its width (or, justified, half
+    the group's width) left of the group's axis; each cell starts where the
+    one before it ends, a justified second cell its slack further on; each
+    sign stands at the centre of the bottom of its cell.
     """
     width, height, rows = measure(group, signs)
     step = unit(level)
-    edge = SIDE_BEARING - GAP // 2
     glyphs = []
     for row, (row_width, _), line in zip(group, rows, _lines(rows, height, step)):
-        cells = [signs[member].cell[0] for member in row]
-        if len(row) == 2 and 0 < width - row_width <= MAX_JUSTIFY:
-            lefts = [0, width * step - cells[1] * step]
-        else:
-            lefts = [width * step // 2 - row_width * step // 2 + sum(cells[:i]) * step
-                     for i in range(len(row))]
-        for member, left, cell in zip(row, lefts, cells):
+        free = slack(row, width, row_width)
+        x = centre(width, step) - half(width if free else row_width, step)
+        for index, member in enumerate(row):
             sign = signs[member]
-            scale = sign.scales[level]
-            x_min, y_min, x_max, _ = sign.box
-            glyphs.append(Glyph(
-                member,
-                edge + left + cell * step // 2 - _round(scale * (x_min + x_max) / 2),
-                line - _round(scale * y_min),
-                level,
-                scale,
-            ))
-    advance = width * step - GAP + 2 * SIDE_BEARING
-    return Cluster(start, end, advance, tuple(glyphs), True)
+            x += free * step * (index == 1)
+            dx, dy = sign_offset(sign, level)
+            glyphs.append(Glyph(member, x + half(sign.cell[0], step) + dx, line + dy,
+                                level, sign.scales[level]))
+            x += sign.cell[0] * step
+    return Cluster(start, end, advance(width, step), tuple(glyphs), True)
 
 
 def _lines(rows, height, step):
     """Rule 7: the line each row stands on, from the baseline."""
-    top = HEIGHT_LIMIT * UNIT
-    spare = top - height * step
-    if len(rows) == 1:
-        return [spare // 2 if rows[0][1] <= LOW_HEIGHT else 0]
-    if len(rows) == 2:
-        margin = min((spare + GAP) // 4, spare // 2)
-        return [top - margin - rows[0][1] * step, margin]
-    lines, line = [], top - spare // 2
-    for _, row_height in rows:
-        line -= row_height * step
-        lines.append(line)
-    return lines
+    top, bottom = span(len(rows), height, step)
+    lines = []
+    for _, row_height in rows[:-1]:
+        top -= row_height * step
+        lines.append(top)
+    return lines + [bottom]
 
 
 def _round(value):

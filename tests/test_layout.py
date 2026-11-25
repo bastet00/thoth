@@ -36,6 +36,7 @@ N23, N33, N35 = 0x13207, 0x13212, 0x13216  # canal, pellet, water
 O1, O29, Q1, Q3 = 0x13250, 0x1327B, 0x132A8, 0x132AA  # house, column, seat, stool
 R4, R8, W24 = 0x132B5, 0x132B9, 0x133CC  # offering table, flag, pot
 X1, Z1, Z2, Z4, Z7, Z15 = 0x133CF, 0x133E4, 0x133E5, 0x133ED, 0x133F2, 0x133FA
+Z16 = 0x13404  # the lowest cell: one unit
 FULL_BLANK, HALF_LOST = 0x13441, 0x13444
 
 # Golden cases: text, and for each cluster its advance and its glyphs as
@@ -95,12 +96,12 @@ GOLDEN = [
         [A1, V, A1, V, A1, H, Z15],
         [(394, [(A1, 51, 720, 6, 0.325), (A1, 51, 360, 6, 0.325), (A1, 36, 0, 6, 0.325), (Z15, 332, 0, 6, 0.25)])],
     ),
-    (  # the height cap: 40 units, level 7, and 41 units, unstacked
-        [A1, V, A1, V, A1, V, X1, A1, V, A1, V, A1, V, Z1],
-        [(284, [(A1, 39, 716, 7, 0.229), (A1, 39, 452, 7, 0.229), (A1, 39, 188, 7, 0.229), (X1, 77, 59, 7, 0.204)]),
+    (  # the height cap: 36 units, level 6, and 37 units, unstacked
+        [A1, V, A1, V, A1, A1, V, A1, V, A1, V, Z16],
+        [(364, [(A1, 36, 720, 6, 0.325), (A1, 36, 360, 6, 0.325), (A1, 36, 0, 6, 0.325)]),
          (898, [(A1, 0, 0, 0, 1.0)]), (698, [(V, 0, 0, 0, 1.0)]), (898, [(A1, 0, 0, 0, 1.0)]),
          (698, [(V, 0, 0, 0, 1.0)]), (898, [(A1, 0, 0, 0, 1.0)]), (698, [(V, 0, 0, 0, 1.0)]),
-         (209, [(Z1, 0, 315, 0, 1.0)])],
+         (513, [(Z16, 0, 316, 0, 1.0)])],
     ),
     (  # the width cap: 32 units, level 6, and 33 units, unstacked
         [A1, H, A1, H, A1, H, Z1, A1, H, A1, H, A1, H, Z1, H, Z15],
@@ -243,8 +244,8 @@ def check_visible(codepoints, signs):
 
 
 def test_constants(signs):
-    check([L.unit(level) for level in range(len(L.LEVEL_HEIGHTS))] == [90, 77, 67, 60, 54, 45, 30, 22],
-          "the eight levels changed")
+    check([L.unit(level) for level in range(len(L.LEVEL_HEIGHTS))] == [90, 77, 67, 60, 54, 45, 30],
+          "the seven levels changed")
     check(L.MIDDLE == 523, "the middle line changed")
     # the fallback box is drawn by the generator; the reference repeats its size
     check(L.CONTROL_ADVANCE == glyphs.BOX + 2 * glyphs.SIDE_BEARING
@@ -259,7 +260,7 @@ def test_signs(signs):
     check(len(signs) == 1078, f"{len(signs)} signs, expected 1,078")
     table = repr([(c, s.cell, s.scales, s.lift) for c, s in sorted(signs.items())])
     digest = hashlib.sha1(table.encode()).hexdigest()[:12]
-    check(digest == "4f347f7f60d2", f"the sign table changed: {digest}")
+    check(digest == "36e99586940b", f"the sign table changed: {digest}")
     # every sign fits a cell on its own: the font needs no larger classes
     check(max(s.cell[0] for s in signs.values()) == L.WIDTH_LIMIT, "a cell is wider than the quadrat")
     check(max(s.cell[1] for s in signs.values()) == L.HEIGHT_LIMIT, "a cell is higher than the quadrat")
@@ -286,8 +287,8 @@ def test_grammar(signs):
     fits = {  # (width, height) in units -> level
         (14, 12): 0, (1, 1): 0, (14, 13): 1, (14, 14): 1, (16, 14): 1, (17, 14): 2, (14, 16): 2,
         (14, 17): 3, (14, 18): 3, (14, 19): 4, (14, 20): 4, (14, 21): 5, (14, 24): 5,
-        (28, 24): 5, (29, 24): 6, (14, 25): 6, (14, 36): 6, (14, 37): 7, (32, 40): 7,
-        (33, 1): None, (1, 41): None,
+        (28, 24): 5, (29, 24): 6, (14, 25): 6, (14, 36): 6, (32, 36): 6,
+        (33, 1): None, (1, 37): None, (14, 37): None,
     }
     for size, level in fits.items():
         check(L.fit_level(*size) == level, f"fit_level{size}: {L.fit_level(*size)}")
@@ -303,14 +304,14 @@ def test_golden_notices_constants(signs):
     """Changing any constant of the layout must break a golden case."""
     changes = {
         "UNIT": 91, "GAP": 33, "HEIGHT_LIMIT": 11, "WIDTH_LIMIT": 13, "SIDE_BEARING": 50,
-        "MAX_WIDTH": 31, "MAX_HEIGHT": 39, "MAX_JUSTIFY": 5, "LOW_HEIGHT": 5, "MIDDLE": 524,
+        "MAX_WIDTH": 31, "MAX_HEIGHT": 35, "MAX_JUSTIFY": 5, "LOW_HEIGHT": 5, "MIDDLE": 524,
         "MOST_REDUCED": 0.7, "CONTROL_ADVANCE": 699,
     }
     changes.update({f"LEVEL_HEIGHTS[{level}]": level for level in range(1, len(L.LEVEL_HEIGHTS))})
     for name, value in changes.items():
         if name.startswith("LEVEL_HEIGHTS"):
             name, kept = "LEVEL_HEIGHTS", L.LEVEL_HEIGHTS
-            value = tuple(h - 2 * (i == value) for i, h in enumerate(kept))
+            value = tuple(h + 2 * (i == value) for i, h in enumerate(kept))
         kept = getattr(L, name)
         setattr(L, name, value)
         try:

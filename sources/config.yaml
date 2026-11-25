@@ -44,13 +44,15 @@ autohintTTF: false
 # These options give fine-grained control over how fontmake builds
 # the fonts.
 # flattenComponents: true
-# decomposeTransformedComponents: true
+# The sign variants are scaled components; keep them (the font is unhinted).
+decomposeTransformedComponents: false
 # checkCompatibility: true
 # overlaps: booleanOperations
 # expandFeaturesToInstances: false
 # reverseOutlineDirection: true
 # removeOutlineOverlaps: true
-# extraFontmakeArgs: ""
+# ...but decompose the flipped components of the Latin letters (¿ and ⸮).
+extraFontmakeArgs: "--filter \"DecomposeTransformedComponentsFilter(include=['questiondown', 'questionreversed'])\""
 # extraVariableFontmakeArgs: ""
 # extraStaticFontmakeArgs: ""
 # glyphData: GlyphData.xml
