@@ -16,24 +16,25 @@ The rules, each stated once:
     with one change: a low sign, one whose cell (rule 2) is at most
     LOW_HEIGHT units high, is moved up so that the middle of its ink is on
     the middle line of the quadrat, MIDDLE (Sign.lift).
- 2. A sign's cell is its ink plus GAP, rounded up to whole units. A sign
-    larger than the quadrat is first reduced, on its own, to fit it.
+ 2. A sign's cell is its ink plus GAP, rounded up to whole units in
+    height and to half units in width. A sign larger than the quadrat is
+    first reduced, on its own, to fit it.
  3. A row (signs joined horizontally) is as wide as its cells together and
     as high as its highest cell. A group (rows joined vertically) is as
     wide as its widest row and as high as its rows together.
  4. The whole group is drawn at one level: the largest of seven at which it
-    is at most WIDTH_LIMIT by HEIGHT_LIMIT units of full size. Most groups
-    fit at level 0, so their signs are as large as the lone signs next to
-    them.
+    is at most WIDTH_LIMIT half units by HEIGHT_LIMIT units of full size.
+    Most groups fit at level 0, so their signs are as large as the lone
+    signs next to them.
  5. At every level the ink of a sign leaves GAP in its cell, so neighbours
     never come closer than GAP. Where the scale of the level alone would
     leave less, the sign is reduced a little more, on its own, by a quarter
     at most (Sign.scales).
  6. Across: the cells of a row touch, each sign is centred in the width of
     its cell, and a row narrower than its group is centred in it. But a row
-    of exactly two signs whose cells leave at most MAX_JUSTIFY units of the
-    group's width free is justified: the first cell flush with the left
-    edge of the group, the second with its right edge.
+    of exactly two signs whose cells leave at most MAX_JUSTIFY half units
+    of the group's width free is justified: the first cell flush with the
+    left edge of the group, the second with its right edge.
  7. Up: the signs of a row stand on one line, the bottom of their cells.
     The rows of a group are centred in the height of the quadrat. One row
     is centred if it is low (as in rule 1) and stands on the baseline if it
@@ -45,18 +46,20 @@ The rules, each stated once:
  8. The advance of a group is its width less one gap, plus the side
     bearings of a sign.
  9. A run of signs and controls that is not a well-formed group, or whose
-    group is wider than MAX_WIDTH or higher than MAX_HEIGHT units, is drawn
-    unstacked: every sign as a lone sign, every control as its fallback box.
+    group is wider than MAX_WIDTH half units or higher than MAX_HEIGHT
+    units, is drawn unstacked: every sign as a lone sign, every control as
+    its fallback box.
 
 Rounding. The font can only add whole numbers that its glyphs carry, so
-every position here is such a sum, rounded as the font rounds it: a unit is
-a whole number of font units at each level (unit()); each glyph's share of
-a position is rounded on its own, from what that one glyph knows: a cell's
-width (whole units), half of its row and half of the group (rounded down),
-the margins of rule 7 (rounded down, from the group's height and level),
-a sign's offset in its cell (to the nearest, baked into its variant); then
-the shares are added. The font and this file therefore agree exactly. Only the outline of a scaled component may differ
-from ink_box(), by its own rounding: at most 2.
+every position here is such a sum, rounded as the font rounds it: a unit
+and a half unit are whole numbers of font units at each level (unit(),
+half_unit()); each glyph's share of a position is rounded on its own, from
+what that one glyph knows: a cell's width (whole half units), half of its
+row and half of the group (rounded down), the margins of rule 7 (rounded
+down, from the group's height and level), a sign's offset in its cell (to
+the nearest, baked into its variant); then the shares are added. The font
+and this file therefore agree exactly. Only the outline of a scaled
+component may differ from ink_box(), by its own rounding: at most 2.
 """
 
 import math
@@ -66,15 +69,16 @@ from fontTools.pens.boundsPen import BoundsPen
 
 # --- 1. Constants -----------------------------------------------------------
 # Lengths are in font units (1000 to the em) unless they are called units.
+# Heights are counted in units, widths in half units.
 
-UNIT = 90  # the grid: cells are whole units wide and high
+UNIT = 90  # the grid: cells are whole units high and whole half units wide
 GAP = 34  # least distance between the ink of two neighbours, at every level
 HEIGHT_LIMIT = 12  # units the quadrat is high
-WIDTH_LIMIT = 14  # units the quadrat is wide
+WIDTH_LIMIT = 28  # half units the quadrat is wide
 LEVEL_HEIGHTS = (12, 14, 16, 18, 20, 24, 36)  # one scale level for each:
 # the height in units that the level brings down to HEIGHT_LIMIT
-MAX_WIDTH, MAX_HEIGHT = 32, 36  # units: a larger group is not stacked
-MAX_JUSTIFY = 6  # units: the most a justified row of two may leave free
+MAX_WIDTH, MAX_HEIGHT = 64, 36  # half units, units: a larger group is not stacked
+MAX_JUSTIFY = 12  # half units: the most a justified row of two may leave free
 LOW_HEIGHT = 6  # units: a lone sign or a single row up to this high is centred
 MIDDLE = (HEIGHT_LIMIT * UNIT - GAP) // 2  # the middle line of the quadrat: 523
 MOST_REDUCED = 0.75  # rule 5 takes at most a quarter off a sign
@@ -86,9 +90,10 @@ SIDE_BEARING = 49  # the side bearing of the signs in the source
 #   is therefore as high as a tall lone sign, and tall signs side by side
 #   are not reduced. The ink of a group is centred on 523, the middle of
 #   those 1046, and so is the ink of a low lone sign.
-# - Fourteen units of width, against twelve of height, let the two commonest
-#   wide signs (mouth 1079, water 1099) keep their size in a group. In a
-#   square quadrat they would be smaller than the lone signs next to them.
+# - Fourteen units of width (28 half units), against twelve of height, let
+#   the two commonest wide signs (mouth 1079, water 1099) keep their size in
+#   a group. In a square quadrat they would be smaller than the lone signs
+#   next to them.
 # - A gap of 34 is about one pixel at the smallest size the signs are read
 #   at (26 pixels to the em); with less, neighbours run together there. It
 #   is the same at every level because the pixel is. With a unit of 90 it
@@ -100,13 +105,19 @@ SIDE_BEARING = 49  # the side bearing of the signs in the source
 #   (milestone 3b). The price: the level of a group inside a group
 #   (a later milestone) comes from a table of products rounded down to a
 #   level, not from a sum.
+# - Widths in half units: the ink of a sign is centred in its cell, so the
+#   ink edges of a justified row and of the row above it can differ by half
+#   the rounding of the cells. With whole units that was up to 1.75 pixels
+#   at 40 pixels to the em, with half units it is under one (milestone 4).
+#   Heights stay in whole units: the signs of a row stand on the bottom of
+#   their cells, so there is no centring up and down to round.
 # - The caps are the largest group of the owner's dictionary (9,330 groups
 #   in 10,224 words), 29 units wide and 36 high: three units more across,
 #   and as high as the lowest level, three full rows, allows. The font
 #   needs no state for sizes beyond them.
-# - Six units free let the bread and the stool of "offering" reach the ends
-#   of the table above them, and keep two strokes under a water sign (nine
-#   units free) together.
+# - Six units (12 half units) free let the bread and the stool of
+#   "offering" reach the ends of the table above them, and keep two strokes
+#   under a water sign (nine units free) together.
 # - Low is half the quadrat: bread, mouth, water and stool are centred when
 #   alone; figures, birds, staffs and lying animals stand on the baseline.
 
@@ -114,6 +125,11 @@ SIDE_BEARING = 49  # the side bearing of the signs in the source
 def unit(level):
     """The unit at a level, in font units: 90, 77, 67, 60, 54, 45, 30."""
     return HEIGHT_LIMIT * UNIT // LEVEL_HEIGHTS[level]
+
+
+def half_unit(level):
+    """The half unit at a level, in font units: 45, 38, 33, 30, 27, 22, 15."""
+    return unit(level) // 2
 
 
 # --- 2. Characters ----------------------------------------------------------
@@ -141,7 +157,8 @@ def is_sign(codepoint):
 # --- 3. Signs ---------------------------------------------------------------
 
 # name: glyph name in the source; advance: its advance; box: ink box
-# (xMin, yMin, xMax, yMax); cell: (width, height) in units, the size class;
+# (xMin, yMin, xMax, yMax); cell: (width, height) in half units and units,
+# the size class;
 # scales: the scale of the sign in a group, one for each level; lift: how
 # far the lone sign is moved up (rule 1). The font bakes scales into the
 # variants of the sign and lift into its lone glyph.
@@ -178,22 +195,23 @@ def sign_table(font):
 def _fit(box):
     """Rule 2: 1, or the scale that brings a large sign inside the quadrat."""
     sizes = (box[2] - box[0], box[3] - box[1])
-    limits = (WIDTH_LIMIT, HEIGHT_LIMIT)
-    return min(1, *((limit * UNIT - GAP) / size for size, limit in zip(sizes, limits)))
+    limits = (WIDTH_LIMIT * UNIT / 2, HEIGHT_LIMIT * UNIT)
+    return min(1, *((limit - GAP) / size for size, limit in zip(sizes, limits)))
 
 
 def sign_cell(box):
-    """Rule 2: the cell of a sign, (width, height) in units."""
+    """Rule 2: the cell of a sign, (width in half units, height in units)."""
     fit = _fit(box)
-    return tuple(math.ceil(round(size * fit + GAP, 6) / UNIT)
-                 for size in (box[2] - box[0], box[3] - box[1]))
+    return tuple(math.ceil(round(size * fit + GAP, 6) / step)
+                 for size, step in zip((box[2] - box[0], box[3] - box[1]), (UNIT / 2, UNIT)))
 
 
 def sign_scale(box, cell, level):
     """Rules 2 and 5: the scale of a sign in a group at a level."""
     sizes = (box[2] - box[0], box[3] - box[1])
     scale = _fit(box) * unit(level) / UNIT
-    clear = min((cells * unit(level) - GAP) / size for size, cells in zip(sizes, cell))
+    steps = (half_unit(level), unit(level))
+    clear = min((cells * step - GAP) / size for size, cells, step in zip(sizes, cell, steps))
     scale = max(min(scale, clear), MOST_REDUCED * scale)
     return math.floor(scale * 1000) / 1000  # rounded down: it must still fit
 
@@ -287,7 +305,7 @@ Cluster = namedtuple("Cluster", "start end advance glyphs stacked")
 
 
 def measure(group, signs):
-    """Rule 3: (width, height) of a group in units, and of each row."""
+    """Rule 3: (width, height) of a group, and of each row: (half units, units)."""
     rows = []
     for row in group:
         cells = [signs[member].cell for member in row]
@@ -296,17 +314,19 @@ def measure(group, signs):
 
 
 def fit_level(width, height):
-    """Rules 4 and 9: the level of a group of this size in units, or None.
+    """Rules 4 and 9: the level of a group of this size (half units wide,
+    units high), or None.
 
     Width and height are fitted on their own; the group takes the smaller
     of the two scales, which is the larger level."""
     if width > MAX_WIDTH or height > MAX_HEIGHT:
         return None
-    return max(_fit_one(width, WIDTH_LIMIT), _fit_one(height, HEIGHT_LIMIT))
+    return max(_fit_one(width, half_unit, WIDTH_LIMIT * UNIT // 2),
+               _fit_one(height, unit, HEIGHT_LIMIT * UNIT))
 
 
-def _fit_one(size, limit):
-    return next(level for level in range(len(LEVEL_HEIGHTS)) if size * unit(level) <= limit * UNIT)
+def _fit_one(size, step, limit):
+    return next(level for level in range(len(LEVEL_HEIGHTS)) if size * step(level) <= limit)
 
 
 def layout(codepoints, signs):
@@ -340,7 +360,8 @@ def _unstacked(index, codepoint, signs):
 # exactly as _stacked() does; the generator calls these same functions.
 
 def advance(width, step):
-    """Rule 8: the advance of a group `width` units wide."""
+    """Rule 8: the advance of a group `width` half units wide, `step` the
+    half unit of its level."""
     return width * step - GAP + 2 * SIDE_BEARING
 
 
@@ -351,12 +372,12 @@ def centre(width, step):
 
 
 def half(units, step):
-    """Half of a length in units, rounded down."""
+    """Half of a length in (half) units, rounded down."""
     return units * step // 2
 
 
 def slack(row, width, row_width):
-    """Rule 6: the units a row of two leaves free when it is justified, else 0."""
+    """Rule 6: the half units a row of two leaves free when it is justified, else 0."""
     free = width - row_width
     return free if len(row) == 2 and 0 < free <= MAX_JUSTIFY else 0
 
@@ -395,9 +416,9 @@ def _stacked(start, end, group, level, signs):
     sign stands at the centre of the bottom of its cell.
     """
     width, height, rows = measure(group, signs)
-    step = unit(level)
+    step = half_unit(level)  # across; up, unit(level)
     glyphs = []
-    for row, (row_width, _), line in zip(group, rows, _lines(rows, height, step)):
+    for row, (row_width, _), line in zip(group, rows, _lines(rows, height, unit(level))):
         free = slack(row, width, row_width)
         x = centre(width, step) - half(width if free else row_width, step)
         for index, member in enumerate(row):

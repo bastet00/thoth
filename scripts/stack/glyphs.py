@@ -83,6 +83,7 @@ class Names:
     head0, vertical0, row0, width0, carrier0 = "Q0", "_V0", "_Rh0", "_Rw0", "_wc0"
     vj, hj = "_vj", "_hj"  # joiners inside a group
     fallback_head, fallback = "Qx", "_x"  # a group over the caps
+    cell_end, cell_start = "_ce", "_cs"  # the ends of a cell, to make a group one cluster
     hidden = "nothing"  # an empty base
 
     @staticmethod
@@ -94,7 +95,7 @@ class Names:
         return f"_ch.{b}"
 
     @staticmethod
-    def width_sum(a, s):  # a cell a units wide, s the width from it to the end of its row
+    def width_sum(a, s):  # a cell a half units wide, s the width from it to the end of its row
         return f"_cf.{a}.{s}"
 
     @staticmethod
@@ -137,7 +138,7 @@ class Names:
 
     # -- what the group is drawn with --
     @staticmethod
-    def head(width, level):  # width in units
+    def head(width, level):  # width in half units
         return f"Q.{width}.{level}"
 
     @staticmethod
@@ -197,7 +198,7 @@ class Names:
     def markers(self):
         """Empty marks: the state of a group while it is computed, and V."""
         return ([self.vertical0, self.row0, self.width0, self.carrier0, self.vj, self.hj,
-                 self.fallback, self.vertical_over]
+                 self.fallback, self.vertical_over, self.cell_end, self.cell_start]
                 + [self.cell_width(a) for a in self.cell_widths]
                 + [self.cell_height(b) for b in self.cell_heights]
                 + [self.width_sum(a, s) for a, s in self.width_sums()]
@@ -273,7 +274,7 @@ def add_stacking(font, names):
     for name in names.heads():
         font.addGlyph(Glyph(name, width=0))
     for width, level in names.head_sizes:
-        font[names.head(width, level)].width = L.advance(width, L.unit(level))
+        font[names.head(width, level)].width = L.advance(width, L.half_unit(level))
     for name in names.markers():
         font.addGlyph(Glyph(name, width=0))
     for level in LEVELS:

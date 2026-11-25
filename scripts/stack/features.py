@@ -19,6 +19,11 @@ memory (their names are in glyphs.Names). GSUB, feature rlig:
  5. justify  the group's width goes to every row; a row of two with slack
              takes the group's width, and a spacer goes between its cells.
  6. level    the level goes from Q to every marker and sign after it.
+ 7. cluster  the group becomes one cluster: a ligature joins the end of
+             each cell to the start of the next, and HarfBuzz gives a
+             ligature and everything between its parts one cluster value,
+             so no text engine puts letter spacing or a line break inside
+             a group.
 
 GPOS, features mark and mkmk: every glyph of a group hangs from one before
 it: V from Q (on the axis), each row from V or the row above, the last row
@@ -236,12 +241,23 @@ def _gsub(n, w):
         rules.append(f"sub [{' '.join(heads)} {leveled[k]}] {leveled[0]}' lookup to_level_{k}")
     w.lookup("levels", rules, w.define("F_LEVELS", [*leveled.values()]), "gsub")
 
+    # 7. cluster. Every cell of a group still has its width marker first and
+    # its height marker before its sign; they have done their work, so they
+    # become the start and the end of the cell. The ligature of a cell's end
+    # and the next cell's start skips the sign and the joiner between them
+    # (all marks); bases, the head of the next group or a lone sign, stop it.
+    # Its parts are marks, so it is a mark ligature: HarfBuzz gives it no
+    # ligature id, and the mark attachments of GPOS are unchanged.
+    w.lookup("cell_ends", [f"sub {cf} by {n.cell_start}", f"sub {chf} by {n.cell_end}"], table="gsub")
+    w.lookup("one_cluster", [f"sub {n.cell_end} {n.cell_start} by {n.cell_start}"],
+             w.define("F_CLUSTER", [n.cell_end, n.cell_start]), "gsub")
+
 
 def _gpos(n, w):
     signs = sorted(n.signs)
     vf = [(key, n.vertical_final(*key)) for key in n.vertical]
     w.text.append(f"markClass {cls(name for _, name in vf)} <anchor 0 0> @mV;")
-    rules = [f"pos base {n.head(g, k)} <anchor {L.centre(g, L.unit(k))} 0> mark @mV"
+    rules = [f"pos base {n.head(g, k)} <anchor {L.centre(g, L.half_unit(k))} 0> mark @mV"
              for g, k in n.head_sizes]
     w.lookup("place_head", rules, table="gpos")
 
@@ -257,7 +273,7 @@ def _gpos(n, w):
     rules = [f"pos mark {name} <anchor 0 {bottom}> mark @mLAST" for (_, bottom), name in vf]
     w.lookup("place_last_row", rules, w.define("F_LAST", [name for _, name in vf] + lasts), "gpos")
 
-    lefts = [(n.row_left(s, k), L.half(s, L.unit(k))) for k in LEVELS for s in n.widths]
+    lefts = [(n.row_left(s, k), L.half(s, L.half_unit(k))) for k in LEVELS for s in n.widths]
     for name, x in lefts:
         w.text.append(f"markClass {name} <anchor {x} 0> @mLEFT;")
     heads = [name for name, _ in rows] + lasts
@@ -268,7 +284,7 @@ def _gpos(n, w):
     # right edge; a spacer moves the next cell by the slack
     enter, leave = defaultdict(list), defaultdict(list)
     for k in LEVELS:
-        step = L.unit(k)
+        step = L.half_unit(k)  # cells and spacers go across
         for c in signs:
             a = n.signs[c].cell[0]
             enter[-L.half(a, step)].append(n.variant(c, k))

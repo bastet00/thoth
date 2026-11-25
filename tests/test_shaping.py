@@ -15,6 +15,13 @@ layout.sign_offset() from the glyph's position, which the generator bakes
 into the variant, and its ink may differ from layout.ink_box() by 2 units.
 Markers (empty, zero-width glyphs that carry the state of a group) are not
 drawn and are not compared, only checked to be empty and zero-width.
+
+Clusters: every glyph of a stacked group has the cluster of the group's
+first character, so that a text engine treats the group as one character;
+every other sign and control has its own (the cluster of its character).
+The tracking check adds space at every cluster boundary, as a text engine
+does for letter spacing, and requires that the signs of a group do not
+move against each other.
 """
 
 import random
@@ -43,9 +50,9 @@ NAMES = glyphs.Names(SIGNS, SOURCE)
 V, H = L.VERTICAL_JOINER, L.HORIZONTAL_JOINER
 FALLBACK = "control.fallback"
 
-# Limits for the budget test, set from the build of milestone 3b (10,755
-# glyphs, 1,023,804 bytes TTF, 378,404 bytes WOFF2) with a little room.
-MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 11_000, 1_050_000, 390_000
+# Limits for the budget test, set from the build with widths in half units
+# (12,398 glyphs, 1,083,928 bytes TTF, 392,760 bytes WOFF2) with a little room.
+MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 12_600, 1_110_000, 405_000
 
 # Egyptological transliteration, beyond the basic Latin set.
 TRANSLITERATION = [
@@ -145,20 +152,28 @@ class Shaper:
         self.variants = {NAMES.variant(c, k): (c, k) for c in SIGNS for k in glyphs.LEVELS}
         self.boxes = {glyphs.control_name(c): c for c in glyphs.CONTROLS}
 
-    def shape(self, codepoints):
+    def shape(self, codepoints, level=hb.BufferClusterLevel.MONOTONE_CHARACTERS, tracking=0):
         """[(glyph, cluster, x, y, advance)], x from the start of the line;
-        each script run shaped on its own, clusters as code point indices."""
+        each script run shaped on its own, clusters as code point indices.
+        level: HarfBuzz's cluster level (MONOTONE_CHARACTERS keeps every
+        character its own cluster unless the font merges them; the default
+        of HarfBuzz and of most text engines, MONOTONE_GRAPHEMES, also puts
+        a combining mark into the cluster of its base). tracking: space
+        added after every cluster, as letter spacing does."""
         out, pen = [], 0
         for start, end in script_runs(codepoints):
             buffer = hb.Buffer()
             buffer.add_codepoints(codepoints[start:end])
             buffer.guess_segment_properties()
-            buffer.cluster_level = hb.BufferClusterLevel.CHARACTERS
+            buffer.cluster_level = level
             hb.shape(self.hb, buffer)
-            for info, pos in zip(buffer.glyph_infos, buffer.glyph_positions):
+            infos = buffer.glyph_infos
+            for i, (info, pos) in enumerate(zip(infos, buffer.glyph_positions)):
                 out.append((self.order[info.codepoint], start + info.cluster,
                             pen + pos.x_offset, pos.y_offset, pos.x_advance))
                 pen += pos.x_advance
+                if i + 1 == len(infos) or infos[i + 1].cluster != info.cluster:
+                    pen += tracking
         return out
 
     def drawn(self, name):
@@ -201,6 +216,7 @@ class Shaper:
             if len(seen) != len(c.glyphs):
                 problems.append(f"cluster at {c.start}: {len(seen)} glyphs drawn, reference {len(c.glyphs)}")
                 continue
+            problems += self.clusters(c, [shaped[i][1] for i in mine])
             for ((codepoint, level), x, y, glyph_advance), glyph in zip(seen, c.glyphs):
                 if codepoint != glyph.codepoint or (level if c.stacked else None) != level:
                     problems.append(f"U+{codepoint:X} at level {level}, reference U+{glyph.codepoint:X}"
@@ -215,6 +231,35 @@ class Shaper:
                     problems.append(f"U+{codepoint:X} at {(x, y)}, reference {expected}")
                 if not c.stacked and glyph_advance == 0:
                     problems.append(f"U+{codepoint:X} has no advance")
+        problems += self.tracking(codepoints, clusters)
+        return problems
+
+    @staticmethod
+    def clusters(c, found):
+        """A group is one cluster, the cluster of its first character; any
+        other sign or control is the cluster of its own character."""
+        if set(found) != {c.start}:
+            kind = "group" if c.stacked else "character"
+            return [f"{kind} at {c.start}: clusters {sorted(set(found))}, expected {c.start}"]
+        return []
+
+    def tracking(self, codepoints, clusters, space=60):
+        """Letter spacing (`space` after each cluster) moves whole groups:
+        the signs of a group keep their places against each other. At
+        HarfBuzz's default cluster level and at the one Skia (Flutter) uses."""
+        problems = []
+        for level in (hb.BufferClusterLevel.MONOTONE_GRAPHEMES, hb.BufferClusterLevel.MONOTONE_CHARACTERS):
+            plain, spaced = (self.shape(codepoints, level, tracking) for tracking in (0, space))
+            for c in clusters:
+                if not c.stacked:
+                    continue
+                mine = [i for i, g in enumerate(plain) if c.start <= g[1] < c.end]
+                if len({plain[i][1] for i in mine}) != 1:
+                    problems.append(f"group at {c.start}: more than one cluster at {level.name}")
+                places = [[(line[i][2] - line[mine[0]][2], line[i][3]) for i in mine]
+                          for line in (plain, spaced)]
+                if places[0] != places[1]:
+                    problems.append(f"group at {c.start}: letter spacing moves its signs at {level.name}")
         return problems
 
 
@@ -350,15 +395,15 @@ def test_golden(shaper):
 # or from layout.py, so that font and reference cannot drift together.
 WORDS = {
     "F35-I9:D21": (1683, [("u13124", 0, 0), ("_0.u13191", 1021, 554), ("_0.u1308B", 1021, 76)]),
-    "R4:X1*Q3": (1324, [("_0.u132B5", 662, 509), ("_0.u133CF", 347, 31), ("_0.u132AA", 1112, 31)]),
-    "D4:X1*Z1": (1234, [("_0.u13079", 617, 577), ("_0.u133CF", 347, 53), ("_0.u133E4", 1112, 53)]),
-    "Q3*X1:N1": (1324, [("_0.u132AA", 212, 577), ("_0.u133CF", 977, 577), ("_0.u131EF", 662, 53)]),
-    "N16:Z1*N23": (1324, [("_0.u131FE", 662, 577), ("_0.u133E4", 122, 53), ("_0.u13207", 932, 53)]),
+    "R4:X1*Q3": (1324, [("_0.u132B5", 662, 509), ("_0.u133CF", 324, 31), ("_0.u132AA", 1112, 31)]),
+    "D4:X1*Z1": (1234, [("_0.u13079", 617, 577), ("_0.u133CF", 324, 53), ("_0.u133E4", 1112, 53)]),
+    "Q3*X1:N1": (1324, [("_0.u132AA", 212, 577), ("_0.u133CF", 999, 577), ("_0.u131EF", 662, 53)]),
+    "N16:Z1*N23": (1324, [("_0.u131FE", 662, 577), ("_0.u133E4", 122, 53), ("_0.u13207", 954, 53)]),
     "D21:N35": (1234, [("_0.u1308B", 617, 599), ("_0.u13216", 617, 121)]),
     "S34-N35:Aa1": (1791, [("u132F9", 0, 0), ("_0.u13216", 1174, 757), ("_0.u1340D", 1174, 53)]),
     "<132B9><131CB><133CF>": (1562, [("u132B9", 0, 0), ("u131CB", 587, 0), ("u133CF", 929, 0)]),
     "A1:O1": (820, [("_4.u13000", 410, 432), ("_4.u13250", 410, 0)]),  # figure 11-1
-    "W24*Z7": (1054, [("_0.u133CC", 257, 0), ("_0.u133F2", 752, 0)]),  # figure 11-1
+    "W24*Z7": (1009, [("_0.u133CC", 257, 0), ("_0.u133F2", 729, 0)]),  # figure 11-1
 }
 
 
@@ -377,11 +422,12 @@ def random_groups():
     rng = random.Random(11)
     codepoints = sorted(SIGNS)
     tall = [c for c in codepoints if SIGNS[c].cell[1] >= 10]
-    a1, z1, z16 = gardiner("A1"), gardiner("Z1"), gardiner("Z16")
-    texts = [  # at the caps and one unit over (32 wide, 36 high)
-        group([[a1, a1, a1, z1]]), group([[a1, a1, a1, z1, z16]]),
+    a1, z16 = gardiner("A1"), gardiner("Z16")
+    f35, q3 = gardiner("F35"), gardiner("Q3")
+    texts = [  # at the caps and one over (64 half units wide, 36 units high)
+        group([[a1, a1, a1, f35]]), group([[a1, a1, a1, q3]]),
         group([[a1], [a1], [a1]]), group([[a1], [a1], [a1], [z16]]),
-        group([[a1, a1, a1, z1], [a1], [a1]]), group([[a1, a1, a1, z1], [a1], [a1], [z16]]),
+        group([[a1, a1, a1, f35], [a1], [a1]]), group([[a1, a1, a1, f35], [a1], [a1], [z16]]),
     ]
     by_level = {}
     while len(texts) < 600 or min(by_level.get(k, 0) for k in [*glyphs.LEVELS, None]) < 60:

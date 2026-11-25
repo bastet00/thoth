@@ -36,7 +36,7 @@ N23, N33, N35 = 0x13207, 0x13212, 0x13216  # canal, pellet, water
 O1, O29, Q1, Q3 = 0x13250, 0x1327B, 0x132A8, 0x132AA  # house, column, seat, stool
 R4, R8, W24 = 0x132B5, 0x132B9, 0x133CC  # offering table, flag, pot
 X1, Z1, Z2, Z4, Z7, Z15 = 0x133CF, 0x133E4, 0x133E5, 0x133ED, 0x133F2, 0x133FA
-Z16 = 0x13404  # the lowest cell: one unit
+Z16, D12 = 0x13404, 0x13082  # the lowest cell (one unit), the pupil
 FULL_BLANK, HALF_LOST = 0x13441, 0x13444
 
 # Golden cases: text, and for each cluster its advance and its glyphs as
@@ -45,11 +45,11 @@ FULL_BLANK, HALF_LOST = 0x13441, 0x13444
 GOLDEN = [
     (  # A1 : O1, figure 11-1 of the Unicode chapter: 20 units high, level 4
         [A1, V, O1],
-        [(820, [(A1, 141, 432, 4, 0.6), (O1, 21, -62, 4, 0.564)])],
+        [(820, [(A1, 141, 432, 4, 0.598), (O1, 21, -62, 4, 0.564)])],
     ),
     (  # W24 * Z7, figure 11-1: one row with a high sign stands on the baseline
         [W24, H, Z7],
-        [(1054, [(W24, 20, -151, 0, 1.0), (Z7, 484, 17, 0, 1.0)])],
+        [(1009, [(W24, 20, -151, 0, 1.0), (Z7, 461, 17, 0, 1.0)])],
     ),
     (  # D21 : N35 "name": two low signs, half the quadrat each
         [D21, V, N35],
@@ -59,17 +59,17 @@ GOLDEN = [
         [F35, I9, V, D21],
         [(359, [(F35, 0, 0, 0, 1.0)]), (1324, [(I9, 7, 564, 0, 0.872), (D21, 73, 81, 0, 1.0)])],
     ),
-    (  # R4 : X1 * Q3 "offering": 3 units free, bread and stool justified
+    (  # R4 : X1 * Q3 "offering": 7 half units free, bread and stool justified
         [R4, V, X1, H, Q3],
-        [(1324, [(R4, 1, 509, 0, 0.99), (X1, 30, -171, 0, 1.0), (Q3, 910, 55, 0, 1.0)])],
+        [(1324, [(R4, 1, 509, 0, 0.99), (X1, 7, -171, 0, 1.0), (Q3, 910, 55, 0, 1.0)])],
     ),
-    (  # N35 : Q3 * N33: 6 units free, the most that is justified
+    (  # N35 : N33 * D12: 12 half units free, the most that is justified
+        [N35, V, N33, H, D12],
+        [(1234, [(N35, 18, 793, 0, 1.0), (N33, 5, 179, 0, 1.0), (D12, 785, 159, 0, 1.0)])],
+    ),
+    (  # N35 : Q3 * N33: 13 half units free, packed and centred
         [N35, V, Q3, H, N33],
-        [(1234, [(N35, 18, 793, 0, 1.0), (Q3, 10, 122, 0, 1.0), (N33, 928, 179, 0, 1.0)])],
-    ),
-    (  # N35 : Q3 * Z1: 7 units free, packed and centred
-        [N35, V, Q3, H, Z1],
-        [(1234, [(N35, 18, 793, 0, 1.0), (Q3, 325, 122, 0, 1.0), (Z1, 692, 98, 0, 1.0)])],
+        [(1234, [(N35, 18, 793, 0, 1.0), (Q3, 303, 122, 0, 1.0), (N33, 658, 179, 0, 1.0)])],
     ),
     (  # N35 : N35 : N35 "water": three rows packed, the block centred
         [N35, V, N35, V, N35],
@@ -77,46 +77,46 @@ GOLDEN = [
     ),
     (  # X1 : N35 : X1 : N35: four rows, 14 units, level 1
         [X1, V, N35, V, X1, V, N35],
-        [(1065, [(X1, 261, 598, 1, 0.855), (N35, 20, 609, 1, 0.855), (X1, 261, 59, 1, 0.855), (N35, 20, 70, 1, 0.855)])],
+        [(1052, [(X1, 255, 598, 1, 0.855), (N35, 14, 609, 1, 0.855), (X1, 255, 59, 1, 0.855), (N35, 14, 70, 1, 0.855)])],
     ),
     (  # X1 * Z1: a low row is centred
         [X1, H, Z1],
-        [(874, [(X1, 30, 113, 0, 1.0), (Z1, 647, 315, 0, 1.0)])],
+        [(829, [(X1, 7, 113, 0, 1.0), (Z1, 602, 315, 0, 1.0)])],
     ),
     (  # D58 : N35: a sign higher than the quadrat is reduced first
         [D58, V, N35],
-        [(935, [(D58, 200, 423, 2, 0.595), (N35, 22, 87, 2, 0.744)])],
+        [(922, [(D58, 194, 423, 2, 0.595), (N35, 16, 87, 2, 0.744)])],
     ),
     (  # two half lost signs over N35, a blank over N35
         [HALF_LOST, H, HALF_LOST, V, N35, FULL_BLANK, V, N35],
-        [(1296, [(HALF_LOST, 43, 358, 1, 0.855), (HALF_LOST, 659, 358, 1, 0.855), (N35, 136, 135, 1, 0.855)]),
-         (935, [(FULL_BLANK, 32, 412, 2, 0.627), (N35, 22, 87, 2, 0.744)])],
+        [(1204, [(HALF_LOST, 20, 358, 1, 0.855), (HALF_LOST, 590, 358, 1, 0.855), (N35, 90, 135, 1, 0.855)]),
+         (922, [(FULL_BLANK, 26, 412, 2, 0.627), (N35, 16, 87, 2, 0.744)])],
     ),
     (  # the narrowest sign at level 6: rule 5 takes its whole quarter
         [A1, V, A1, V, A1, H, Z15],
-        [(394, [(A1, 51, 720, 6, 0.325), (A1, 51, 360, 6, 0.325), (A1, 36, 0, 6, 0.325), (Z15, 332, 0, 6, 0.25)])],
+        [(379, [(A1, 48, 720, 6, 0.313), (A1, 48, 360, 6, 0.313), (A1, 33, 0, 6, 0.313), (Z15, 317, 0, 6, 0.25)])],
     ),
     (  # the height cap: 36 units, level 6, and 37 units, unstacked
         [A1, V, A1, V, A1, A1, V, A1, V, A1, V, Z16],
-        [(364, [(A1, 36, 720, 6, 0.325), (A1, 36, 360, 6, 0.325), (A1, 36, 0, 6, 0.325)]),
+        [(349, [(A1, 33, 720, 6, 0.313), (A1, 33, 360, 6, 0.313), (A1, 33, 0, 6, 0.313)]),
          (898, [(A1, 0, 0, 0, 1.0)]), (698, [(V, 0, 0, 0, 1.0)]), (898, [(A1, 0, 0, 0, 1.0)]),
          (698, [(V, 0, 0, 0, 1.0)]), (898, [(A1, 0, 0, 0, 1.0)]), (698, [(V, 0, 0, 0, 1.0)]),
          (513, [(Z16, 0, 316, 0, 1.0)])],
     ),
-    (  # the width cap: 32 units, level 6, and 33 units, unstacked
-        [A1, H, A1, H, A1, H, Z1, A1, H, A1, H, A1, H, Z1, H, Z15],
-        [(1024, [(A1, 36, 0, 6, 0.325), (A1, 336, 0, 6, 0.325), (A1, 636, 0, 6, 0.325), (Z1, 936, 0, 6, 0.25)]),
+    (  # the width cap: 64 half units, level 6, and 65, unstacked
+        [A1, H, A1, H, A1, H, F35, A1, H, A1, H, A1, H, Q3],
+        [(1024, [(A1, 33, 0, 6, 0.313), (A1, 318, 0, 6, 0.313), (A1, 603, 0, 6, 0.313), (F35, 890, 0, 6, 0.27)]),
          (898, [(A1, 0, 0, 0, 1.0)]), (698, [(H, 0, 0, 0, 1.0)]), (898, [(A1, 0, 0, 0, 1.0)]),
          (698, [(H, 0, 0, 0, 1.0)]), (898, [(A1, 0, 0, 0, 1.0)]), (698, [(H, 0, 0, 0, 1.0)]),
-         (209, [(Z1, 0, 315, 0, 1.0)]), (698, [(H, 0, 0, 0, 1.0)]), (117, [(Z15, 0, 315, 0, 1.0)])],
+         (402, [(Q3, 0, 363, 0, 1.0)])],
     ),
     (  # A1 : Z2, man over plural strokes: 17 units, level 3
         [A1, V, Z2],
-        [(664, [(A1, 33, 337, 3, 0.666), (Z2, 56, 23, 3, 0.639)])],
+        [(634, [(A1, 18, 337, 3, 0.666), (Z2, 41, 23, 3, 0.639)])],
     ),
     (  # A1 : A1, two tall signs: 24 units, level 5
         [A1, V, A1],
-        [(514, [(A1, 32, 540, 5, 0.5), (A1, 32, 0, 5, 0.5)])],
+        [(482, [(A1, 25, 540, 5, 0.48), (A1, 25, 0, 5, 0.48)])],
     ),
     (  # R8, M17, X1 alone (the owner's picture) and R4 (6 units): X1 and R4 lifted
         [R8, M17, X1, R4],
@@ -139,7 +139,7 @@ MALFORMED = [
     [M17, H, SEGMENT, X1, V, N35, V, A1], [X1, OVERLAY, O1, N35], [A1, INSERT, O1, X1],
     [A1, MIRROR], [I9, V, N35, V, 0x13113, 0x13433, A1], [*range(0x13430, 0x13441)],
     [A1, V, A1, V, A1, V, A1],  # 48 units high: over the cap
-    [N35, H, N35, H, N35],  # 39 units wide: over the cap
+    [N35, H, N35, H, N35],  # 78 half units wide: over the cap
     [D58, V, D58, V, D58, V, D58, V, N35],  # 51 units high
 ]
 
@@ -246,6 +246,8 @@ def check_visible(codepoints, signs):
 def test_constants(signs):
     check([L.unit(level) for level in range(len(L.LEVEL_HEIGHTS))] == [90, 77, 67, 60, 54, 45, 30],
           "the seven levels changed")
+    check([L.half_unit(level) for level in range(len(L.LEVEL_HEIGHTS))] == [45, 38, 33, 30, 27, 22, 15],
+          "the half units changed")
     check(L.MIDDLE == 523, "the middle line changed")
     # the fallback box is drawn by the generator; the reference repeats its size
     check(L.CONTROL_ADVANCE == glyphs.BOX + 2 * glyphs.SIDE_BEARING
@@ -260,7 +262,7 @@ def test_signs(signs):
     check(len(signs) == 1078, f"{len(signs)} signs, expected 1,078")
     table = repr([(c, s.cell, s.scales, s.lift) for c, s in sorted(signs.items())])
     digest = hashlib.sha1(table.encode()).hexdigest()[:12]
-    check(digest == "36e99586940b", f"the sign table changed: {digest}")
+    check(digest == "3dfbe9ff0256", f"the sign table changed: {digest}")
     # every sign fits a cell on its own: the font needs no larger classes
     check(max(s.cell[0] for s in signs.values()) == L.WIDTH_LIMIT, "a cell is wider than the quadrat")
     check(max(s.cell[1] for s in signs.values()) == L.HEIGHT_LIMIT, "a cell is higher than the quadrat")
@@ -284,11 +286,12 @@ def test_grammar(signs):
         check(L.parse(run) == expected, f"parse {label(run)}: {L.parse(run)}")
     text = [A1, O1, V, X1, 0x20, V, N35, 0x72, A1, V, V, O1, X1]
     check(L.runs(text) == [(0, 1), (1, 4), (5, 7), (8, 12), (12, 13)], f"runs: {L.runs(text)}")
-    fits = {  # (width, height) in units -> level
-        (14, 12): 0, (1, 1): 0, (14, 13): 1, (14, 14): 1, (16, 14): 1, (17, 14): 2, (14, 16): 2,
-        (14, 17): 3, (14, 18): 3, (14, 19): 4, (14, 20): 4, (14, 21): 5, (14, 24): 5,
-        (28, 24): 5, (29, 24): 6, (14, 25): 6, (14, 36): 6, (32, 36): 6,
-        (33, 1): None, (1, 37): None, (14, 37): None,
+    fits = {  # (width in half units, height in units) -> level
+        (28, 12): 0, (1, 1): 0, (28, 13): 1, (28, 14): 1, (33, 14): 1, (34, 14): 2, (28, 16): 2,
+        (38, 1): 2, (39, 1): 3, (42, 1): 3, (43, 1): 4, (46, 1): 4, (47, 1): 5,
+        (28, 17): 3, (28, 18): 3, (28, 19): 4, (28, 20): 4, (28, 21): 5, (28, 24): 5,
+        (57, 24): 5, (58, 24): 6, (28, 25): 6, (28, 36): 6, (64, 36): 6,
+        (65, 1): None, (1, 37): None, (28, 37): None,
     }
     for size, level in fits.items():
         check(L.fit_level(*size) == level, f"fit_level{size}: {L.fit_level(*size)}")
@@ -303,8 +306,8 @@ def test_golden(signs):
 def test_golden_notices_constants(signs):
     """Changing any constant of the layout must break a golden case."""
     changes = {
-        "UNIT": 91, "GAP": 33, "HEIGHT_LIMIT": 11, "WIDTH_LIMIT": 13, "SIDE_BEARING": 50,
-        "MAX_WIDTH": 31, "MAX_HEIGHT": 35, "MAX_JUSTIFY": 5, "LOW_HEIGHT": 5, "MIDDLE": 524,
+        "UNIT": 91, "GAP": 33, "HEIGHT_LIMIT": 11, "WIDTH_LIMIT": 27, "SIDE_BEARING": 50,
+        "MAX_WIDTH": 63, "MAX_HEIGHT": 35, "MAX_JUSTIFY": 11, "LOW_HEIGHT": 5, "MIDDLE": 524,
         "MOST_REDUCED": 0.7, "CONTROL_ADVANCE": 699,
     }
     changes.update({f"LEVEL_HEIGHTS[{level}]": level for level in range(1, len(L.LEVEL_HEIGHTS))})
@@ -360,16 +363,33 @@ def test_owner_rules(signs):
         cluster, inks = stacked([tall, H, M17], signs)
         check(cluster.glyphs[0].scale == 1.0 and inks[0][1] == 0 and inks[1][1] == 0,
               f"U+{tall:X} * M17: the tall sign shrank or left the baseline")
-    # O4: rows of two are justified to the group's edges (on cells: the ink
-    # may be up to half a unit in); single members and rows of three centred
+    # O4: rows of two are justified to the group's edges: on cells, so the
+    # ink of each end is within a pixel at 40 pixels to the em (25 units) of
+    # the ink of the widest row; single members and rows of three centred
+    pixel = 1000 / 40
     for text in ([R4, V, X1, H, Q3], [D4, V, X1, H, Z1], [Q3, H, X1, V, N1], [N16, V, Z1, H, N23]):
         _, inks = stacked(text, signs)
         row = [i for i, c in enumerate(c for c in text if L.is_sign(c)) if c in (X1, Q3, Z1, N23)]
         first, last = inks[row[0]], inks[row[-1]]
         rest = [ink for i, ink in enumerate(inks) if i not in row]
-        check(0 <= first[0] - min(i[0] for i in rest) <= L.UNIT / 2
-              and 0 <= max(i[2] for i in rest) - last[2] <= L.UNIT / 2,
+        check(abs(first[0] - min(i[0] for i in rest)) <= pixel
+              and abs(max(i[2] for i in rest) - last[2]) <= pixel,
               f"{label(text)}: the row of two is not flush with the edges")
+    justified = 0
+    for _ in range(3000):  # the same for any justified row against a widest row of one sign
+        rows = [[rng.choice(sorted(signs)) for _ in range(rng.choice((1, 2)))] for _ in range(2)]
+        parsed = tuple(map(tuple, rows))
+        width, _, sizes = L.measure(parsed, signs)
+        if L.fit_level(*L.measure(parsed, signs)[:2]) is None:
+            continue
+        _, inks = stacked(group(rows), signs)
+        ends = [inks[:len(rows[0])], inks[len(rows[0]):]]
+        for row, (row_width, _), mine, other, other_row in zip(rows, sizes, ends, ends[::-1], rows[::-1]):
+            if L.slack(row, width, row_width) and len(other_row) == 1:
+                justified += 1
+                check(abs(mine[0][0] - other[0][0]) <= pixel and abs(mine[-1][2] - other[0][2]) <= pixel,
+                      f"{label(group(rows))}: a justified row is more than a pixel off the edges")
+    check(justified > 50, f"only {justified} justified rows")
     for text in ([N35, V, Z1, H, Z1], [N35, V, Z1, H, Z1, H, Z1], [N35, V, Z1], [R4, V, X1]):
         cluster, inks = stacked(text, signs)
         left, right = inks[1][0] - inks[0][0], inks[0][2] - inks[-1][2]
@@ -412,8 +432,8 @@ def test_rounding(signs):
     """Every position is a sum of whole numbers each glyph can carry (the
     rounding contract): a sign is centred in its cell by its own offset, and
     its cell starts flush with an edge of the group, or a whole number of
-    units from half the group less half its row (each half rounded down); a
-    row stands on its cell bottoms."""
+    half units from half the group less half its row (each half rounded
+    down); a row stands on its cell bottoms."""
     rng = random.Random(7)
     codepoints = sorted(signs)
     edge = L.SIDE_BEARING - L.GAP // 2
@@ -425,7 +445,7 @@ def test_rounding(signs):
         level = L.fit_level(width, height)
         if level is None or len(group(rows)) == 1:
             continue
-        step = L.unit(level)
+        step = L.half_unit(level)  # cells are whole half units wide
         (cluster,) = L.layout(group(rows), signs)
         glyph_iter = iter(cluster.glyphs)
         for row, (row_width, _) in zip(rows, sizes):
