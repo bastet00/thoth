@@ -4,7 +4,7 @@
 
 It is named after Thoth (Egyptian *ḏḥwtj*, Djehuty; Arabic تحوت), the god who in Egyptian belief gave people the hieroglyphic script. Google Fonts does not allow script names in a family name, so the name is just "Thoth".
 
-Status: **work in progress** – the font builds and contains the signs, imported from Noto Sans Egyptian Hieroglyphs, and the Latin letters for Egyptological transliteration (ꜣ ꜥ ḥ ḫ ẖ š ṯ ḏ and the rest), taken from Noto Sans (see [Credits](#credits)). It stacks flat groups (the vertical and horizontal joiners, U+13430 and U+13431); segments, insertions and overlays come next.
+Status: **work in progress** – the font builds and contains the signs, imported from Noto Sans Egyptian Hieroglyphs, and the Latin letters for Egyptological transliteration (ꜣ ꜥ ḥ ḫ ẖ š ṯ ḏ and the rest), taken from Noto Sans (see [Credits](#credits)). It stacks flat groups (the vertical and horizontal joiners, U+13430 and U+13431) and corner insertions (U+13432–U+13435), also in plain text without any of these controls (see below); segments and overlays come next.
 
 ## What the font should do
 
@@ -20,6 +20,14 @@ Unicode encodes hieroglyph layout with format controls (U+13430–U+1343F). The 
 | Insert at middle/top/bottom, mirror, damage, … | U+13439–U+1345F | Unicode 15 extensions |
 
 Example: `𓂋` U+13430 `𓈖` should render as 𓂋 above 𓈖 in one group.
+
+### Automatic stacking
+
+Almost no text contains these controls, so Thoth also stacks the words of its own word list when they are typed as plain signs: `𓂋𓈖` comes out as 𓂋 above 𓈖 without anything typed between them. The list (`scripts/stack/automatic.txt`, 90 words; see its header) is the project's own: the words of the Bastet course (units 1 and 2), the project's test words, and the owner's bird-corner words, each in its standard spelling. For a word in the list the font adds the same controls a writer would type, so the result looks exactly as with the controls. Every other word keeps its signs in a row rather than risk a wrong stack: type the controls to stack it.
+
+- Explicit controls always win: a sign next to a control is never stacked automatically.
+- To keep two signs apart, put a space or ZWNJ (U+200C) between them.
+- To switch the automatic layer off, turn off the OpenType feature `calt` (CSS `font-feature-settings: "calt" 0`; HarfBuzz `-calt`). The controls keep working.
 
 ## Where it will be used
 
@@ -39,7 +47,7 @@ make proof   # HTML proofs in out/proof
 
 The only hand-edited font source is `sources/Thoth-Regular.ufo`. `sources/build.sh` is the one build command, in two steps:
 
-1. The generator in `scripts/stack` reads the source and writes the font that gets compiled to `sources/build/` (not committed): `layout.py` decides where every sign of a group goes, `glyphs.py` adds a scaled copy of each sign per size level and the empty marker glyphs, and `features.py` writes the OpenType rules (GSUB `rlig`, GPOS `mark`/`mkmk`) that compute the same layout while the text is shaped.
+1. The generator in `scripts/stack` reads the source and writes the font that gets compiled to `sources/build/` (not committed): `layout.py` decides where every sign of a group goes, `glyphs.py` adds a scaled copy of each sign per size level and the empty marker glyphs, and `features.py` writes the OpenType rules (GSUB `calt` for the automatic layer and `rlig`, GPOS `mark`/`mkmk`) that compute the same layout while the text is shaped.
 2. `gftools builder` compiles it as set up in `sources/config.yaml`, and adds the Latin letters from a tagged Noto Sans release, which it downloads on the first build.
 
 `tests/test_layout.py` checks the layout rules; `tests/test_shaping.py` shapes text with HarfBuzz and checks that the font draws every group exactly as `layout.py` says. The font is a static TTF and stays unhinted (the size levels are scaled components). Built fonts are not committed; GitHub Actions builds them, and tagged releases (e.g. `0.100`) get a zip attached.

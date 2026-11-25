@@ -422,3 +422,36 @@ def add_insertion(font, names):
     for name in inserts.markers():
         font.addGlyph(Glyph(name, width=0))
     return inserts.bases()
+
+
+# --- Automatic stacking (layout section 7) ------------------------------------
+
+class Automatic:
+    """Glyphs of the automatic layer and the table it compiles.
+
+    All are empty marks: a word start and a word end (rule A2) put before
+    and after the signs of a stretch where it begins or ends a word; a slot
+    between every two signs of a stretch; an implied control, one per
+    control the table uses, which a slot becomes and which becomes the
+    control itself once rule A5 has been checked; and an empty glyph that
+    an implied control becomes where rule A5 keeps its block from forming.
+    """
+
+    start, end, slot, null = "auto.start", "auto.end", "auto.slot", "auto.null"
+
+    def __init__(self, table):
+        self.table = table  # layout.automatic_table()
+        self.controls = sorted({c for arrangement in table.values() for block in arrangement
+                                for c in block if not L.is_sign(c)})
+
+    @staticmethod
+    def join(control):  # an implied control
+        return f"auto.{control_name(control)}"
+
+    def markers(self):
+        return [self.start, self.end, self.slot, self.null] + [self.join(c) for c in self.controls]
+
+
+def add_automatic(font, automatic):
+    for name in automatic.markers():
+        font.addGlyph(Glyph(name, width=0))

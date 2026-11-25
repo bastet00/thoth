@@ -25,6 +25,13 @@ memory (their names are in glyphs.Names). GSUB, feature rlig:
              so no text engine puts letter spacing or a line break inside
              a group.
 
+Before all of these, under feature calt, the automatic layer (layout
+section 7) adds the controls that the table implies in plain text; see
+_gsub_auto(). HarfBuzz applies calt and rlig in the same stage, lookup by
+lookup in the order of the lookup list, so the automatic lookups, which
+come first in it, run before the stacking lookups; a text engine can turn
+calt off and leave rlig on.
+
 GPOS, features mark and mkmk: every glyph of a group hangs from one before
 it: V from Q (on the axis), each row from V or the row above, the last row
 from V's bottom, the row-width marker from its row, each sign from the
@@ -43,6 +50,7 @@ from glyphs import CONTROLS, LEVELS, OVER, control_name
 SIGNS = range(0x13000, 0x13460)  # Egyptian Hieroglyphs and their format controls
 DOTTED_CIRCLE = 0x25CC
 SYSTEMS = (("DFLT", "dflt"), ("egyp", "dflt"))  # where the stacking lookups apply
+RULES = 1500  # automatic layer: about this many rules to a subtable
 
 
 def cls(names):
@@ -256,6 +264,97 @@ def _gsub(n, w):
              w.define("F_CLUSTER", [n.cell_end, n.cell_start]), "gsub")
 
 
+def _gsub_auto(n, w, auto):
+    """The automatic layer (layout rules A1 to A6), feature calt. S is a
+    lone sign, C a control as typed, I a default ignorable. Returns the
+    lookups, in order.
+
+     1. words    a word start goes before S if neither S nor C is before
+                 it, a word end after S if neither S nor C follows it; the
+                 rules name I where it is next to S, as HarfBuzz would skip
+                 it in context (rule A2). Every stretch then has a word
+                 start, or C right before it, and a word end, or C right
+                 after it; signs of different stretches never touch.
+     2. slots    an empty slot goes between every two signs of a stretch.
+     3. stack    one rule per table entry, longest first, the entries that
+                 hold at a word start before the others, matched over the
+                 signs (the slots are skipped); an entry marked START has
+                 the word start as its backtrack, one marked END the word
+                 end as its lookahead. At each sign that the arrangement
+                 joins to the next, the slot after it becomes that implied
+                 control: a substitution of one glyph by one, so that the
+                 rule's positions do not move. A rule with none only takes
+                 the signs. A rule consumes its signs, so the next rule is
+                 tried after them (rule A4). S right after C starts nothing
+                 (rule A5).
+     4. release  right to left, an implied control before the S that is
+                 right before C, and every implied control of the same
+                 block before it, becomes an empty glyph (rule A5).
+     5. controls the implied controls become the controls, for the
+                 stacking lookups. The slots that are left stay, empty, between
+                 signs that were apart anyway.
+    """
+    signs = sorted(n.signs)
+    sign = w.define("A_SIGN", [n.lone(c) for c in signs])
+    ctrl = w.define("A_CTRL", [control_name(c) for c in CONTROLS])
+    ign = w.define("A_IGNORABLE", n.ignorables)
+    lookups = []
+
+    # 1. words, 2. slots
+    for name, output in (("auto_start_mark", "{a} {s}"), ("auto_end_mark", "{s} {b}"),
+                         ("auto_slot_mark", "{s} {c}")):
+        w.lookup(name, [f"sub {n.lone(c)} by " + output.format(a=auto.start, b=auto.end, c=auto.slot,
+                                                                s=n.lone(c)) for c in signs])
+    w.lookup("auto_starts", [f"sub {ign} {sign}' lookup auto_start_mark", f"ignore sub [{sign} {ctrl}] {sign}'",
+                             f"sub {sign}' lookup auto_start_mark"])
+    w.lookup("auto_ends", [f"sub {sign}' lookup auto_end_mark {ign}", f"ignore sub {sign}' [{sign} {ctrl}]",
+                           f"sub {sign}' lookup auto_end_mark"])
+    w.lookup("auto_slots", [f"sub {sign}' lookup auto_slot_mark {sign}"])
+    lookups += ["auto_starts", "auto_ends", "auto_slots"]
+
+    # 3. stack: at a sign, the slot after it becomes an implied control
+    for control in auto.controls:
+        w.lookup(f"auto_to_{control_name(control)}", [f"sub {auto.slot} by {auto.join(control)}"])
+        w.lookup(f"auto_{control_name(control)}",
+                 [f"sub {sign}' {auto.slot}' lookup auto_to_{control_name(control)}"])
+
+    def order(item):  # by the first sign; the rules of one sign as rule A4 tries them
+        key, _ = item
+        first = key[1] if key[0] == L.START else key[0]
+        return (first, key[0] != L.START, -len(key), L.write_entry(*item))
+
+    # a subtable takes the rules of whole first signs, about RULES of them,
+    # so that it stays in the 16-bit offsets of format 1 (rules by glyph)
+    rules, count, previous = [f"ignore sub {ctrl} {sign}'"], 0, None
+    for key, arrangement in sorted(auto.table.items(), key=order):
+        first = order((key, arrangement))[0]
+        if first != previous and (previous is None or count >= RULES):
+            rules.append("subtable")
+            count = 0
+        previous, count = first, count + 1
+        follows = []  # the control after each sign of the entry, or None
+        for block in arrangement:
+            for a, b in zip(block, (*block[1:], None)):
+                if L.is_sign(a):
+                    follows.append(None if b is None or L.is_sign(b) else b)
+        signs_of = [c for c in key if c not in (L.START, L.END)]
+        body = " ".join(f"{n.lone(c)}'" + (f" lookup auto_{control_name(f)}" if f else "")
+                        for c, f in zip(signs_of, follows))
+        back = f"{auto.start} " if key[0] == L.START else ""
+        ahead = f" {auto.end}" if key[-1] == L.END else ""
+        rules.append(f"{'' if any(follows) else 'ignore '}sub {back}{body}{ahead}")
+    w.lookup("auto_stack", rules, w.define("A_WORD", [auto.start, auto.end]), extension=True)
+    lookups.append("auto_stack")
+
+    # 4. release, 5. controls
+    rules = []
+    for name in [auto.join(c) for c in auto.controls]:
+        rules += [f"rsub {name}' {sign} {ctrl} by {auto.null}", f"rsub {name}' {sign} {auto.null} by {auto.null}"]
+    w.lookup("auto_release", rules)
+    w.lookup("auto_controls", [f"sub {auto.join(c)} by {control_name(c)}" for c in auto.controls])
+    return lookups + ["auto_release", "auto_controls"]
+
+
 def _gpos(n, w):
     signs = sorted(n.signs)
     vf = [(key, n.vertical_final(*key)) for key in n.vertical]
@@ -451,7 +550,7 @@ def _gpos_insert(n, w):
     return ["ins_place", "ins_sign_place"]
 
 
-def categories(font, names):
+def categories(font, names, automatic):
     """GDEF glyph classes, in the form of public.openTypeCategories.
 
     The Latin letters and marks arrive with their own classes. Every sign
@@ -462,7 +561,7 @@ def categories(font, names):
     bases = {glyph.name for glyph in font
              if any(u in SIGNS or u == DOTTED_CIRCLE for u in glyph.unicodes)}
     bases |= {*names.joined.values(), *names.heads(), *names.inserts.bases()}
-    marks = set(names.markers()) | set(names.inserts.markers())
+    marks = set(names.markers()) | set(names.inserts.markers()) | set(automatic.markers())
     for level in LEVELS:
         marks |= set(names.leveled(level))
     found = {name: "base" for name in bases}
@@ -470,9 +569,10 @@ def categories(font, names):
     return dict(sorted(found.items()))
 
 
-def add_features(font, names):
+def add_features(font, names, automatic):
     w = Writer()
     w.text += [f"languagesystem {script} {language};" for script, language in SYSTEMS]
+    auto = _gsub_auto(names, w, automatic)  # first in the lookup list
     _gsub(names, w)
     _gpos(names, w)
 
@@ -486,8 +586,9 @@ def add_features(font, names):
         return [f"feature {tag} {{", *body, f"}} {tag};"]
 
     inserts = _gpos_insert(names, w)
+    w.text += feature("calt", auto)
     w.text += feature("rlig", w.gsub)
     w.text += feature("mark", w.gpos[:1] + inserts[:1], automatic=True)
     w.text += feature("mkmk", w.gpos[1:] + inserts[1:], automatic=True)
-    font.lib["public.openTypeCategories"] = categories(font, names)
+    font.lib["public.openTypeCategories"] = categories(font, names, automatic)
     font.features.text = "\n".join(w.text) + "\n"

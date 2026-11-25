@@ -51,6 +51,9 @@ The rules, each stated once:
     its fallback box.
 10. A sign, a corner insertion control and a sign put the second sign into
     a corner of the first (section 6, rules I1 to I6).
+11. Plain text, signs with no control between them, is stacked as if the
+    controls of a table of known sign sequences were there (section 7,
+    rules A1 to A6). Explicit controls always win.
 
 Rounding. The font can only add whole numbers that its glyphs carry, so
 every position here is such a sum, rounded as the font rounds it: a unit
@@ -65,7 +68,10 @@ component may differ from ink_box(), by its own rounding: at most 2.
 """
 
 import math
+import re
+import unicodedata
 from collections import namedtuple
+from pathlib import Path
 
 from fontTools.pens.basePen import BasePen
 from fontTools.pens.boundsPen import BoundsPen
@@ -333,12 +339,18 @@ def _fit_one(size, step, limit):
     return next(level for level in range(len(LEVEL_HEIGHTS)) if size * step(level) <= limit)
 
 
-def layout(codepoints, signs):
+def layout(codepoints, signs, table=None):
     """Lay out text: [Cluster] for its signs and controls, in text order.
 
     Characters that are neither (letters, spaces) get no cluster: the font
-    shapes them as usual.
+    shapes them as usual. table: the automatic stacking table (section 7,
+    automatic_table()), or None for the font with the automatic layer
+    switched off.
     """
+    if table:
+        text, origin = automatic(codepoints, table)
+        return [cluster._replace(start=origin[cluster.start], end=origin[cluster.end - 1] + 1)
+                for cluster in layout(text, signs)]
     clusters = []
     for start, end in runs(codepoints):
         run = codepoints[start:end]
@@ -774,3 +786,174 @@ def _inserted(start, end, run, signs):
     seat = zone.seats[seat_width(insert_size(sign, inner)) - 1]
     glyph = Glyph(inserted, zone.x + dx, b.lift + seat + dy, inner, sign.scales[inner])
     return Cluster(start, end, b.advance, (drawn, glyph), True)
+
+
+# --- 7. Automatic stacking --------------------------------------------------
+#
+# Almost no text carries the controls: word lists, web pages, course
+# texts and hieroglyph keyboards give plain sign sequences. The automatic
+# pass reads such text and adds the controls that a table of known sign
+# sequences says belong there (automatic.txt, next to this file: what is in
+# it and where it comes from is said in its header). Everything after that
+# is the layout above, so a stacked group looks the same whether its
+# controls were typed or implied.
+#
+# The rules, each stated once:
+#
+# A1. A stretch is a longest run of signs with nothing between them. Only
+#     signs of one stretch are stacked together, so any other character
+#     keeps two signs apart: a space, ZWNJ (U+200C), a letter, any default
+#     ignorable.
+# A2. A stretch that follows such a character, or the start of the text,
+#     begins a word; one followed by such a character, or the end of the
+#     text, ends a word. A stretch that touches a control on a side (the
+#     controls of rules 9 and 10) does not begin or end a word there.
+# A3. An entry of the table is a sign sequence, which may be marked to hold
+#     only where a word begins (START before it) or ends (END after it),
+#     and its arrangement: the sequence cut into blocks, each block a sign
+#     or a group written with the controls (rules 3 and 10).
+# A4. A stretch is read from its start. At a word start, the longest entry
+#     marked START that the stretch begins with is taken, if any; elsewhere,
+#     and if there is none, the longest unmarked entry that begins at that
+#     sign (an entry marked END holds only if the word ends right after it).
+#     An entry that is taken implies the controls of its arrangement and the
+#     reading goes on after it; if none is taken, the sign stays alone and
+#     the reading goes on at the next sign. An entry may be all single
+#     signs: it then only keeps a known sequence apart.
+# A5. Explicit controls win. A sign right after a control never starts an
+#     entry; a block of an entry that reaches the sign right before a
+#     control is not formed (its signs stay alone), and the other blocks of
+#     that entry are.
+# A6. Every arrangement in the table is a group the layout stacks (rule 9
+#     never applies to it), so the automatic pass never draws a control box.
+#
+# The font does the same in GSUB (features.py) under feature "calt", which a
+# text engine or a page can switch off ("font-feature-settings: 'calt' 0");
+# layout(..., table=None) is the font with the feature off.
+
+AUTOMATIC_TABLE = Path(__file__).with_name("automatic.txt")
+START, END = "start", "end"  # the marks of an entry that holds at a word start or end
+NOTATION = {":": VERTICAL_JOINER, "*": HORIZONTAL_JOINER,
+            "^ts": TOP_START, "^bs": BOTTOM_START, "^te": TOP_END, "^be": BOTTOM_END}
+CODE = re.compile(r"([A-Z][a-z]?)(\d+)([a-z]*)")
+
+
+def code_point(code):
+    """The sign of a Gardiner code, as Unicode names it: D21 is U+1308B
+    EGYPTIAN HIEROGLYPH D021, Aa1 is AA001, N35a is N035A."""
+    letters, number, suffix = CODE.fullmatch(code).groups()
+    return ord(unicodedata.lookup(f"EGYPTIAN HIEROGLYPH {letters.upper()}{int(number):03d}{suffix.upper()}"))
+
+
+def code_of(codepoint):
+    """The Gardiner code of a sign: the inverse of code_point()."""
+    name = unicodedata.name(chr(codepoint)).rsplit(" ", 1)[-1]
+    letters, number, suffix = re.fullmatch(r"([A-Z]+?)(\d+)([A-Z]*)", name).groups()
+    return f"{letters[0]}{letters[1:].lower()}{int(number)}{suffix.lower()}"
+
+
+def parse_entry(text):
+    """'<G14^teX1-B1>' -> (key, arrangement): the key the sign sequence with
+    START and END, the arrangement a tuple of blocks of code points."""
+    start, end = text.startswith("<"), text.endswith(">")
+    blocks = []
+    for block in text.strip("<>").split("-"):
+        tokens = re.findall(r"\^(?:ts|bs|te|be)|[:*]|[A-Z][a-z]?\d+[a-z]*", block)
+        if "".join(tokens) != block:
+            raise ValueError(f"not an entry: {text}")
+        blocks.append(tuple(NOTATION[t] if t in NOTATION else code_point(t) for t in tokens))
+    signs = tuple(c for block in blocks for c in block if is_sign(c))
+    return (START,) * start + signs + (END,) * end, tuple(blocks)
+
+
+def write_entry(key, arrangement):
+    """The inverse of parse_entry()."""
+    names = {control: text for text, control in NOTATION.items()}
+    text = "-".join("".join(names.get(c) or code_of(c) for c in block) for block in arrangement)
+    return "<" * (key[0] == START) + text + ">" * (key[-1] == END)
+
+
+def automatic_table(path=AUTOMATIC_TABLE):
+    """{key: arrangement} of the table file (rule A3)."""
+    table = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip()
+        if line:
+            key, arrangement = parse_entry(line)
+            if key in table:
+                raise ValueError(f"entry twice: {line}")
+            table[key] = arrangement
+    return table
+
+
+def check_table(table, signs):
+    """Rule A6 and the form of the entries: [problems]."""
+    problems = []
+    for key, arrangement in table.items():
+        text = write_entry(key, arrangement)
+        plain = [c for c in key if c not in (START, END)]
+        if len(plain) < 2 or any(c not in signs for c in plain):
+            problems.append(f"{text}: fewer than two signs, or a sign the font lacks")
+        for block in arrangement:
+            if len(block) == 1:
+                continue
+            if is_insertion(list(block)):
+                continue  # rules I1 to I6 always draw a block
+            group = parse(list(block))
+            if group is None or fit_level(*measure(group, signs)[:2]) is None:
+                problems.append(f"{text}: block {write_entry((), (block,))} would not be stacked")
+    return problems
+
+
+def automatic(codepoints, table):
+    """Rules A1 to A5: (text, origin), the text with the implied controls,
+    and for each of its characters the index in codepoints it comes from
+    (an implied control: the sign before it)."""
+    joins = {}  # index of a sign: the controls implied after it
+    longest = max(map(len, table), default=0)
+    index, count = 0, len(codepoints)
+    while index < count:
+        if not is_sign(codepoints[index]):
+            index += 1
+            continue
+        end = index
+        while end < count and is_sign(codepoints[end]):
+            end += 1
+        bound_start = index > 0 and codepoints[index - 1] in CONTROLS
+        bound_end = end < count and codepoints[end] in CONTROLS
+        stretch = (*((START,) * (not bound_start)), *codepoints[index:end], *((END,) * (not bound_end)))
+        first = index - (not bound_start)  # the index of stretch[0] in codepoints
+        position, taken = 0, []
+        while position < len(stretch):
+            if stretch[position] == END or (bound_start and position == 0):
+                position += 1
+                continue
+            for length in range(min(longest, len(stretch) - position), 1, -1):
+                arrangement = table.get(stretch[position:position + length])
+                if arrangement is not None:
+                    signs = position + (stretch[position] == START)
+                    taken.append((first + signs, arrangement))
+                    position += length
+                    break
+            else:
+                position += 1
+        for at, arrangement in taken:
+            for block in arrangement:
+                size = sum(map(is_sign, block))
+                if not (bound_end and at + size == end):  # rule A5
+                    sign = at
+                    for c in block[1:]:
+                        if is_sign(c):
+                            sign += 1
+                        else:
+                            joins.setdefault(sign, []).append(c)
+                at += size
+        index = end
+    text, origin = [], []
+    for i, codepoint in enumerate(codepoints):
+        text.append(codepoint)
+        origin.append(i)
+        for control in joins.get(i, ()):
+            text.append(control)
+            origin.append(i)
+    return text, origin

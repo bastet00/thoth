@@ -657,10 +657,113 @@ def test_random(signs):
         check_visible(text, signs)
 
 
+# --- automatic stacking (layout section 7) ----------------------------------
+
+TE = L.TOP_END
+S34, ZWNJ, ZWJ, SPACE = 0x132F9, 0x200C, 0x200D, 0x20
+
+# Plain text, and the text with controls that it must lay out as.
+AUTOMATIC = [
+    ([R4, X1, Q3], [R4, V, X1, H, Q3]),  # ḥtp "offering"
+    ([F35, I9, D21], [F35, I9, V, D21]),  # nfr "good"
+    ([S34, N35, 0x1340D], [S34, N35, V, 0x1340D]),  # ꜥnḫ "life"
+    ([D21, N35], [D21, V, N35]),  # rn "name"
+    ([G14, X1, B1], [G14, TE, X1, B1]),  # mwt "mother": t in the vulture's corner (O5)
+    ([R8, M17, X1], [R8, M17, X1]),  # the owner's lone signs (O6): nothing stacks, X1 centred
+    ([M17, X1], [M17, X1]),  # jt "father" without its viper: a tall and a low sign stay apart
+    ([A1, B1], [A1, B1]),  # two tall signs never stack
+    ([F35, F35, F35], [F35, F35, F35]),  # three tall narrow signs
+    ([D21, ZWNJ, N35], [D21, ZWNJ, N35]),  # ZWNJ keeps two signs apart
+    ([D21, SPACE, N35], [D21, SPACE, N35]),  # and so does a space
+    ([D21, ZWJ, N35], [D21, ZWJ, N35]),  # and any other character
+    ([R4, X1, Q3, SPACE, F35, I9, D21], [R4, V, X1, H, Q3, SPACE, F35, I9, V, D21]),
+    # explicit controls win (rule A5): nothing starts at a sign after a
+    # control, and a block that reaches a sign before a control is not formed
+    ([R4, V, X1, Q3], [R4, V, X1, Q3]),
+    ([F35, I9, D21, V, N35], [F35, I9, D21, V, N35]),
+    ([R4, X1, Q3, H, Z1], [R4, X1, Q3, H, Z1]),
+    ([F35, I9, V, D21, SPACE, R4, X1, Q3], [F35, I9, V, D21, SPACE, R4, V, X1, H, Q3]),
+    # a word typed right after a group, with no space, does not begin a word:
+    # rn (a whole word only) stays apart there; ḥtp also holds where a word
+    # ends, so it stacks
+    ([F35, I9, V, D21, D21, N35], [F35, I9, V, D21, D21, N35]),
+    ([F35, I9, V, D21, R4, X1, Q3], [F35, I9, V, D21, R4, V, X1, H, Q3]),
+    # inside a run without spaces: nfr holds where a word ends, rn.f too
+    ([M17, X1, F35, I9, D21], [M17, X1, F35, I9, V, D21]),
+    ([D21, N35, I9], [D21, V, N35, I9]),
+    # the owner's bird corners (O5) hold as whole words only
+    ([G43, X1], [G43, TE, X1]),
+    ([G1, X1], [G1, TE, X1]),
+    ([G17, X1], [G17, TE, X1]),
+    ([G39, Z1], [G39, TE, Z1]),
+    ([D21, G43, X1], [D21, G43, X1]),
+    ([G1, X1, N35], [G1, X1, N35]),
+    ([G17, X1, SPACE, G39, Z1, D21], [G17, TE, X1, SPACE, G39, Z1, D21]),
+    ([G14, TE, X1, D21, N35], [G14, TE, X1, D21, N35]),
+]
+
+
+def automatic_text(codepoints, table):
+    return L.automatic(codepoints, table)[0]
+
+
+def test_automatic(signs):
+    table = L.automatic_table()
+    problems = L.check_table(table, signs)
+    check(not problems, f"automatic table: {problems[:5]}")
+    for key, arrangement in table.items():  # the notation reads back
+        check(L.parse_entry(L.write_entry(key, arrangement)) == (key, arrangement),
+              f"{L.write_entry(key, arrangement)} does not read back")
+    for plain, expected in AUTOMATIC:
+        text, origin = L.automatic(plain, table)
+        check(text == expected, f"{label(plain)}: {label(text)}, expected {label(expected)}")
+        found = L.layout(plain, signs, table)
+        reference = [(c.advance, c.glyphs, c.stacked) for c in L.layout(expected, signs)]
+        check([(c.advance, c.glyphs, c.stacked) for c in found] == reference,
+              f"{label(plain)}: laid out unlike {label(expected)}")
+        # one cluster per group, covering the plain characters it stands for
+        check([i for c in found for i in range(c.start, c.end)]
+              == [i for i, c in enumerate(plain) if L.is_sign(c) or c in L.CONTROLS],
+              f"{label(plain)}: clusters {[(c.start, c.end) for c in found]}")
+        check_visible(text, signs)
+    # rule A6: every entry, typed plainly as a word, is stacked as its
+    # arrangement says and draws no control box
+    stacked = 0
+    for key, arrangement in table.items():
+        plain = [c for c in key if c not in (L.START, L.END)]
+        clusters = L.layout(plain, signs, table)
+        boxes_ = [g for c in clusters for g in c.glyphs if g.codepoint in L.CONTROLS]
+        expected = [c for block in arrangement for c in block]
+        check(not boxes_ and automatic_text(plain, table) == expected,
+              f"{L.write_entry(key, arrangement)}: {label(automatic_text(plain, table))}")
+        stacked += sum(c.stacked for c in clusters)
+    # off: without the table, plain text is never stacked
+    check(not any(c.stacked for plain, _ in AUTOMATIC if not set(plain) & set(L.CONTROLS)
+                  for c in L.layout(plain, signs)),
+          "plain text stacked without the table")
+    # random plain text and plain text next to controls: deterministic, and
+    # everything stays visible
+    rng = random.Random(7)
+    known = sorted({c for key in table for c in key if c not in (L.START, L.END)})
+    others = (V, H, TE, ZWNJ, ZWJ, SPACE, 0x13432, 0x13433, 0x13435)
+    for _ in range(1500):
+        text = [rng.choice(known) if rng.random() < 0.85 else rng.choice(others)
+                for _ in range(rng.randint(1, 12))]
+        once, origin = L.automatic(text, table)
+        check(once == automatic_text(text, table), f"{label(text)}: not deterministic")
+        kept = [i for i in range(len(once)) if i == 0 or origin[i] != origin[i - 1]]
+        check([once[i] for i in kept] == text and all(once[i] in L.CONTROLS for i in range(len(once))
+                                                      if i not in kept), f"{label(text)}: characters changed")
+        check_visible(once, signs)
+    print(f"  automatic: {len(table)} entries, {stacked} groups when typed as words, "
+          f"{len(AUTOMATIC)} golden texts")
+
+
 def main():
     signs = L.sign_table(SOURCE)
     tests = (test_constants, test_signs, test_grammar, test_golden, test_golden_notices_constants,
-             test_owner_rules, test_rounding, test_insertion, test_malformed, test_random)
+             test_owner_rules, test_rounding, test_insertion, test_malformed, test_random,
+             test_automatic)
     for test in tests:
         try:
             test(signs)

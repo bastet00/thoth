@@ -46,14 +46,18 @@ import layout as L  # noqa: E402
 
 SOURCE = ufoLib2.Font.open(ROOT / "sources/Thoth-Regular.ufo")
 SIGNS = L.sign_table(SOURCE)
+TABLE = L.automatic_table()  # the automatic layer (feature calt), on by default
+AUTOMATIC = glyphs.Automatic(TABLE)
+AUTOMATIC_MARKS = set(AUTOMATIC.markers())
 NAMES = glyphs.Names(SIGNS, SOURCE)
 V, H = L.VERTICAL_JOINER, L.HORIZONTAL_JOINER
 FALLBACK = "control.fallback"
 
-# Limits for the budget test, set from the build with corner insertion
-# (12,554 glyphs, 1,165,772 bytes TTF, 420,928 bytes WOFF2; without it
-# 12,398, 1,083,928 and 392,620) with a little room.
-MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 12_750, 1_200_000, 435_000
+# Limits for the budget test, set from the build with the automatic layer
+# and its own-word table (12,602 glyphs, 1,213,564 bytes TTF, 435,152 bytes
+# WOFF2; without the layer 12,594, 1,184,664 and 427,992; without corner
+# insertion 12,398, 1,083,928 and 392,620) with a little room.
+MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 12_750, 1_230_000, 445_000
 
 # Egyptological transliteration, beyond the basic Latin set.
 TRANSLITERATION = [
@@ -144,7 +148,10 @@ def script_runs(codepoints):
 
 
 class Shaper:
-    def __init__(self, path):
+    def __init__(self, path, table=TABLE, features=None):
+        """table: what layout.py compares with (None: no automatic layer);
+        features: HarfBuzz features, {"calt": False} switches it off."""
+        self.table, self.features = table, features
         self.path = Path(path)
         self.font = TTFont(self.path)
         self.order = self.font.getGlyphOrder()
@@ -168,7 +175,7 @@ class Shaper:
             buffer.add_codepoints(codepoints[start:end])
             buffer.guess_segment_properties()
             buffer.cluster_level = level
-            hb.shape(self.hb, buffer)
+            hb.shape(self.hb, buffer, self.features)
             infos = buffer.glyph_infos
             for i, (info, pos) in enumerate(zip(infos, buffer.glyph_positions)):
                 out.append((self.order[info.codepoint], start + info.cluster,
@@ -197,7 +204,8 @@ class Shaper:
         problems = []
         if 0x25CC not in codepoints and any(g[0] == NAMES.dotted_circle for g in shaped):
             problems.append("a dotted circle appeared")
-        clusters = L.layout(codepoints, SIGNS)
+        clusters = L.layout(codepoints, SIGNS, self.table)
+        implied = L.automatic(codepoints, self.table) if self.table else (codepoints, range(len(codepoints)))
         covered = {i for c in clusters for i in range(c.start, c.end)}
         for name, cluster, *_ in shaped:
             if self.drawn(name) and cluster not in covered:
@@ -221,7 +229,7 @@ class Shaper:
                 problems.append(f"cluster at {c.start}: {len(seen)} glyphs drawn, reference {len(c.glyphs)}")
                 continue
             problems += self.clusters(c, [shaped[i][1] for i in mine])
-            run = codepoints[c.start:c.end]
+            run = [t for t, o in zip(*implied) if c.start <= o < c.end]  # with the implied controls
             inserted = c.stacked and L.is_insertion(run) and L.insertion(*run, SIGNS) is not None
             for index, (((codepoint, level), x, y, glyph_advance), glyph) in enumerate(zip(seen, c.glyphs)):
                 # the base of an insertion is its lone glyph, or at a level its shrunk glyph
@@ -315,6 +323,8 @@ def shape_simple(shaper, text):
     """Golden-line form: [(glyph, advance, x offset, y offset)]."""
     out, previous = [], 0
     for name, _, x, y, advance in shaper.shape([ord(c) for c in text]):
+        if name in AUTOMATIC_MARKS:  # the empty marks of the automatic layer
+            continue
         out.append((name, advance, x - previous, y))
         previous += advance
     return out
@@ -335,7 +345,7 @@ def test_lone_signs(shaper):
     that the build's overlap removal may change it by)."""
     lifted = 0
     for codepoint, sign in SIGNS.items():
-        shaped = shaper.shape([codepoint])
+        shaped = [g for g in shaper.shape([codepoint]) if g[0] not in AUTOMATIC_MARKS]
         check([g[0] for g in shaped] == [sign.name] and shaped[0][2:] == (0, 0, sign.advance),
               f"U+{codepoint:05X}: {shaped}")
         box = bounds(shaper, sign.name)
@@ -383,7 +393,7 @@ def test_glyphs(shaper):
         found = bounds(shaper, name)
         worst = max(worst, *(abs(a - b) for a, b in zip(found, expected)))
     check(worst <= 2, f"a variant's ink is {worst:.2f} units from the reference")
-    markers = [*NAMES.markers(), *NAMES.inserts.markers(),
+    markers = [*NAMES.markers(), *NAMES.inserts.markers(), *AUTOMATIC.markers(),
                *(n for k in glyphs.LEVELS for n in NAMES.leveled(k) if n not in shaper.variants)]
     check(all(hmtx[m][0] == 0 and not outline(shaper, m) for m in markers), "a marker draws or advances")
     # a shrunk bird (layout rule I4): one component, its bird scaled and
@@ -640,6 +650,48 @@ def test_insertion(shaper):
           + ", ".join(f"{k}: {v}" for k, v in sorted(outcomes.items())))
 
 
+def test_automatic(shaper):
+    """The automatic layer (layout rules A1 to A6): plain text comes out as
+    layout.py lays it out with the table, every entry of the table and
+    seeded random plain text, next to spaces, ZWNJ and controls; with calt
+    switched off, as layout.py without the table."""
+    signs = [c for c in sorted(SIGNS) if c in L.HIEROGLYPHS]
+    rng = random.Random(11)
+    known = sorted({c for key in TABLE for c in key if c not in (L.START, L.END)})
+    entries = [[c for c in key if c not in (L.START, L.END)] for key in sorted(TABLE, key=str)]
+    texts = list(entries)  # each entry as a word of its own
+    texts += [[rng.choice(known), *e, rng.choice(known)] for e in entries]  # inside a longer stretch
+    texts += [[0x20, *e, 0x200C, rng.choice(known)] for e in entries[::5]]  # between a space and ZWNJ
+    separators = (0x20, 0x200C, 0x200D, 0x13430, 0x13431, 0x13434, 0x13432)
+    for _ in range(2000):  # random plain text, some of it next to controls
+        text = []
+        for _ in range(rng.randint(2, 14)):
+            r = rng.random()
+            text.append(rng.choice(known) if r < 0.8 else rng.choice(signs) if r < 0.92
+                        else rng.choice(separators))
+        texts.append(text)
+    for words in range(300):  # running text: entries without spaces
+        texts.append([c for _ in range(rng.randint(2, 6)) for c in rng.choice(entries)])
+    count, failed = compare_all(shaper, texts)
+    stacked = sum(c.stacked for text in texts[:len(entries)] for c in L.layout(text, SIGNS, TABLE))
+    # golden plain words: the glyphs that draw, as for the same words typed with controls
+    golden = (("R4-X1-Q3", "R4:X1*Q3"), ("F35-I9-D21", "F35-I9:D21"), ("D21-N35", "D21:N35"),
+              ("S34-N35-Aa1", "S34-N35:Aa1"), ("G14-X1-B1", "G14<13434>X1-B1"))  # mwt: t in the corner
+    for plain, explicit in golden:
+        found = [(g[0], g[2], g[3]) for g in shaper.shape(encode(plain)) if shaper.drawn(g[0])]
+        reference = [(g[0], g[2], g[3]) for g in shaper.shape(encode(explicit)) if shaper.drawn(g[0])]
+        check(found == reference and len(found) > len({g[0] for g in found if g[0] in shaper.lone}),
+              f"{plain} typed plainly: {found}, typed with controls: {reference}")
+    for text in (encode('D21<200C>N35'), encode('D21" "N35'), encode('G14-X1-B1<200C>D21<200C>N35')):
+        drawn = [g[0] for g in shaper.shape(text) if shaper.drawn(g[0])]
+        check(all(g in shaper.lone for g in drawn[-2:]), f"{label(text)}: ZWNJ or space joined {drawn}")
+    # the feature switched off: no automatic stacking at all
+    off = Shaper(shaper.path, table=None, features={"calt": False})
+    off_count, off_failed = compare_all(off, texts[:len(entries)] + texts[-2300:])
+    print(f"  automatic: {count} texts compared ({len(entries)} table entries alone, {stacked} groups), "
+          f"{failed} failed; with calt off {off_count} texts, {off_failed} failed")
+
+
 def glyphs_of(lookup, names):
     """Every glyph name a lookup refers to (coverages, classes, outputs)."""
     found = set()
@@ -669,7 +721,7 @@ def test_lookups(shaper):
     font = shaper.font
     egyptian = {*shaper.lone, *shaper.boxes, *shaper.variants, FALLBACK, *NAMES.joined.values(),
                 *NAMES.heads(), *NAMES.markers(), *(n for k in glyphs.LEVELS for n in NAMES.leveled(k)),
-                *NAMES.inserts.bases(), *NAMES.inserts.markers()}
+                *NAMES.inserts.bases(), *NAMES.inserts.markers(), *AUTOMATIC.markers()}
     shared = {".notdef", "space", NAMES.dotted_circle, NAMES.zwnj, *NAMES.ignorables}
     names = set(shaper.order)
     for tag in ("GSUB", "GPOS"):
@@ -677,11 +729,11 @@ def test_lookups(shaper):
         records = table.table.FeatureList.FeatureRecord
         scripts = {s.ScriptTag: s.Script for s in table.table.ScriptList.ScriptRecord}
         check({"DFLT", "egyp"} <= set(scripts), f"{tag}: egyp or DFLT is not declared")
-        stacking = {"rlig"} if tag == "GSUB" else set()
+        stacking = {"rlig", "calt"} if tag == "GSUB" else set()
         for script_tag, script in scripts.items():
             tags = {records[i].FeatureTag for i in script.DefaultLangSys.FeatureIndex}
-            check(script_tag in ("DFLT", "egyp") or not tags & {"rlig"},
-                  f"{tag}: rlig is registered for {script_tag}")
+            check(script_tag in ("DFLT", "egyp") or not tags & {"rlig", "calt"},
+                  f"{tag}: rlig or calt is registered for {script_tag}")
         for record in records:
             for index in record.Feature.LookupListIndex:
                 used = glyphs_of(table.table.LookupList.Lookup[index], names) - shared
@@ -711,7 +763,8 @@ def main():
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "fonts/ttf/Thoth-Regular.ttf"
     shaper = Shaper(path)
     tests = (test_cmap, test_lone_signs, test_controls, test_glyphs, test_golden, test_words,
-             test_groups, test_insertion, test_malformed, test_mixed, test_lookups, test_budget)
+             test_groups, test_insertion, test_malformed, test_mixed, test_automatic, test_lookups,
+             test_budget)
     for test in tests:
         try:
             test(shaper)
