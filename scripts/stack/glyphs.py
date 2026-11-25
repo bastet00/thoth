@@ -461,3 +461,200 @@ class Automatic:
 def add_automatic(font, automatic):
     for name in automatic.markers():
         font.addGlyph(Glyph(name, width=0))
+
+
+# --- Enclosures (layout section 8) --------------------------------------------
+
+class Enclosures:
+    """Glyphs of enclosures and what the features need to know.
+
+    Glyphs: a pending copy of each enclosure control (its box) and of each
+    delimiter (its sign), which the features put in first so that no group
+    or word reaches across them (rule E2) and put back where no enclosure
+    forms (rule E3); the joined delimiters (rule E6); an empty base for a
+    control without its delimiter (rule E7); the line pieces and merlon
+    rows (rule E6); a spacer per cell, the base of a lone sign drawn as a
+    group of one (rule E4); and the empty marks that carry the state of an
+    enclosure while the features check it (features._gsub_enclosure_end).
+    """
+
+    start, end = "_enc.start", "_enc.end"  # a control without its delimiter
+    inside = "_ein"  # after the base of every cluster that may be inside
+    kinds = ("plain", "walled")
+
+    def __init__(self, signs, rings):
+        self.signs, self.rings = signs, rings
+        self.cells = sorted({s.cell for s in signs.values()})
+        self.edges = {kind: L.band_edges(kind, rings) for kind in self.kinds}
+        self.merlon = L.merlon_size(rings)
+        widest = L.advance(L.MAX_WIDTH, L.half_unit(0))  # the widest cluster there is
+        self.counts = range(1, L.merlon_count(widest, rings) + 1)
+        self.enclosable = L.enclosable(signs)
+        # {base glyph of an insertion that rule E4 moves inside an enclosure:
+        # (how far, code point, level)}
+        self.moved = {}
+        for (base, level), fits in sorted(self.enclosable.items()):
+            move = L.lift_in_enclosure(signs[base])
+            if fits and move:
+                self.moved[signs[base].name + (f".shrink{level}" if level else "")] = (move, base, level)
+
+    # -- names --
+    @staticmethod
+    def pending(codepoint):  # an enclosure control, until it is known to enclose
+        return f"{control_name(codepoint)}.enc"
+
+    def waiting(self, codepoint):  # a delimiter next to an enclosure control
+        return f"{self.signs[codepoint].name}.{'open' if codepoint in L.OPENINGS else 'close'}"
+
+    def joined(self, codepoint):
+        return f"{self.signs[codepoint].name}.ring"
+
+    @staticmethod
+    def spacer(cell):
+        return f"_E.{cell[0]}.{cell[1]}"
+
+    @staticmethod
+    def line(kind, length, side):  # side: "start" (x 0 to length) or "end" (x -length to 0)
+        return f"_el.{kind[0]}.{length}.{side[0]}"
+
+    @staticmethod
+    def merlons(kind, count):
+        return f"_em.{kind[0]}.{count}"
+
+    @staticmethod
+    def state(name, kind=None):
+        """b: after a begin control; in: inside, of a kind; e: after an end
+        control; ok: checked, the enclosure forms."""
+        return f"_e{name}" + (f".{kind[0]}" if kind else "")
+
+    def frame_name(self, part):
+        """The glyph of a layout.Frame part."""
+        if part[0] == "piece":
+            return self.joined(part[1])
+        if part[0] == "line":
+            return self.line(*part[1:])
+        return self.merlons(part[1], part[2])
+
+    # -- families --
+    def bases(self):
+        """Glyphs with an advance, for the glyph order."""
+        return ([self.pending(c) for c in L.ENCLOSURE] + [self.waiting(c) for c in (*L.OPENINGS, *L.CLOSINGS)]
+                + [self.joined(c) for c in (*L.OPENINGS, *L.CLOSINGS)] + [self.spacer(c) for c in self.cells])
+
+    def empty_bases(self):
+        return [self.start, self.end]
+
+    def states(self):
+        return ([self.inside] + [self.state(n, k) for n in ("b", "in", "e", "eok", "ok", "bok") for k in self.kinds])
+
+    def lines(self):
+        return [self.line(k, m, s) for k in self.kinds for m in L.SEGMENTS for s in ("start", "end")]
+
+    def merlon_rows(self):
+        return [self.merlons("walled", n) for n in self.counts]
+
+    def markers(self):
+        """Empty marks."""
+        return self.states()
+
+    def marks(self):
+        """Every mark: the empty ones and the drawn lines."""
+        return self.states() + self.lines() + self.merlon_rows()
+
+
+def _rectangle(pen, x0, y0, x1, y1):
+    pen.moveTo((x0, y0))  # counter-clockwise, as in the rest of the source
+    pen.lineTo((x1, y0))
+    pen.lineTo((x1, y1))
+    pen.lineTo((x0, y1))
+    pen.closePath()
+
+
+def _bands(pen, edges, x0, x1):
+    """The four thin lines of the two bands, from x0 to x1."""
+    for low, high in zip(edges[::2], edges[1::2]):
+        _rectangle(pen, x0, low, x1, high)
+
+
+def _joined_outline(font, sign, ring, edges):
+    """Rule E6: the delimiter scaled and moved as its Ring says, its band
+    ends opened, and the bands of the lines carried on to its edge."""
+    import pathops
+    from fontTools.pens.transformPen import TransformPen
+
+    source = pathops.Path()
+    font[sign.name].draw(TransformPen(source.getPen(), (ring.scale, 0, 0, ring.scale, 0, ring.dy)))
+    # the end of the hole of the upper band: where the ink closes it
+    middle = (ring.bands[5] + ring.bands[6]) / 2
+    pen = L._Crossings(middle)  # crossings of the line y = middle: the outline turned
+    font[sign.name].draw(TransformPen(pen, (0, 1, 1, 0, 0, 0)))
+    xs = sorted(pen.found)
+    cut = (xs[-2] if ring.opening else xs[1]) * ring.scale
+    far = ring.advance + 100
+    cap = pathops.Path()
+    low, high = ring.bands[0] * ring.scale + ring.dy, ring.bands[7] * ring.scale + ring.dy
+    for a, b in ((low - 1, ring.bands[3] * ring.scale + ring.dy + 1),
+                 (ring.bands[4] * ring.scale + ring.dy - 1, high + 1)):
+        _rectangle(cap.getPen(), cut if ring.opening else -100, a, far if ring.opening else cut, b)
+    opened = pathops.op(source, cap, pathops.PathOp.DIFFERENCE, fix_winding=True)
+    carried = pathops.Path()
+    _bands(carried.getPen(), edges, cut - 1 if ring.opening else 0, ring.advance if ring.opening else cut + 1)
+    return pathops.op(opened, carried, pathops.PathOp.UNION, fix_winding=True)
+
+
+def add_enclosures(font, enclosures):
+    """Add the glyphs of enclosures (font: the source, signs not yet
+    lifted). Returns those with an advance, for the glyph order."""
+    from fontTools.pens.roundingPen import RoundingPen
+
+    e, signs = enclosures, enclosures.signs
+    for codepoint in L.ENCLOSURE:
+        glyph = Glyph(e.pending(codepoint), width=L.CONTROL_ADVANCE)
+        glyph.components.append(Component(FALLBACK))
+        font.addGlyph(glyph)
+    for codepoint in (*L.OPENINGS, *L.CLOSINGS):
+        sign, ring = signs[codepoint], e.rings[codepoint]
+        glyph = Glyph(e.waiting(codepoint), width=sign.advance)
+        glyph.components.append(Component(sign.name))
+        font.addGlyph(glyph)
+        kind = "walled" if codepoint in (0x13286, 0x13287, 0x13288, 0x13289) else "plain"
+        outline = _joined_outline(font, sign, ring, e.edges[kind])
+        glyph = Glyph(e.joined(codepoint), width=ring.advance)
+        outline.draw(RoundingPen(glyph.getPen()))
+        font.addGlyph(glyph)
+    for cell in e.cells:
+        font.addGlyph(Glyph(e.spacer(cell), width=L.advance(cell[0], L.half_unit(0))))
+    for name in e.empty_bases() + e.markers():
+        font.addGlyph(Glyph(name, width=0))
+    for kind in e.kinds:
+        for length in L.SEGMENTS:
+            for side in ("start", "end"):
+                glyph = Glyph(e.line(kind, length, side), width=0)
+                _bands(glyph.getPen(), e.edges[kind], 0 if side == "start" else -length,
+                       length if side == "start" else 0)
+                font.addGlyph(glyph)
+    merlon, gap, height = e.merlon
+    edges = e.edges["walled"]
+    stroke = edges[7] - edges[6]
+    for count in e.counts:
+        glyph = Glyph(e.merlons("walled", count), width=0)
+        pen = glyph.getPen()
+        left = -(count * (merlon + gap) - gap) // 2
+        for i in range(count):
+            x0 = left + i * (merlon + gap)
+            x1 = x0 + merlon
+            for base, up in ((edges[7], 1), (edges[0], -1)):  # on the top band, under the bottom one
+                tip = base + up * height
+                outer = [(x0, base), (x1, base), (x1, tip), (x0, tip)]
+                inner = [(x0 + stroke, base), (x1 - stroke, base), (x1 - stroke, tip - up * stroke),
+                         (x0 + stroke, tip - up * stroke)]
+                # a U standing on the band: the outer box less the inner one
+                points = [outer[0], inner[0], inner[3], inner[2], inner[1], outer[1], outer[2], outer[3]]
+                if up < 0:
+                    points.reverse()
+                pen.moveTo(points[0])
+                for point in points[1:]:
+                    pen.lineTo(point)
+                pen.closePath()
+        font.addGlyph(glyph)
+    return e.bases()
