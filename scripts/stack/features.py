@@ -306,17 +306,20 @@ def _gsub_auto(n, w, auto):
     ign = w.define("A_IGNORABLE", n.ignorables)
     lookups = []
 
-    # 1. words, 2. slots
-    for name, output in (("auto_start_mark", "{a} {s}"), ("auto_end_mark", "{s} {b}"),
-                         ("auto_slot_mark", "{s} {c}")):
-        w.lookup(name, [f"sub {n.lone(c)} by " + output.format(a=auto.start, b=auto.end, c=auto.slot,
-                                                                s=n.lone(c)) for c in signs])
+    # 1. words, 2. slots. Inserting a glyph takes a rule per sign, so there
+    # are two such lookups, a mark before the sign and one after it; a word
+    # end goes in as a slot, which auto_end turns into the end before any
+    # other slot is there
+    for name, output in (("auto_start_mark", "{a} {s}"), ("auto_slot_mark", "{s} {c}")):
+        w.lookup(name, [f"sub {n.lone(c)} by " + output.format(a=auto.start, c=auto.slot, s=n.lone(c))
+                        for c in signs])
     w.lookup("auto_starts", [f"sub {ign} {sign}' lookup auto_start_mark", f"ignore sub [{sign} {ctrl}] {sign}'",
                              f"sub {sign}' lookup auto_start_mark"])
-    w.lookup("auto_ends", [f"sub {sign}' lookup auto_end_mark {ign}", f"ignore sub {sign}' [{sign} {ctrl}]",
-                           f"sub {sign}' lookup auto_end_mark"])
+    w.lookup("auto_ends", [f"sub {sign}' lookup auto_slot_mark {ign}", f"ignore sub {sign}' [{sign} {ctrl}]",
+                           f"sub {sign}' lookup auto_slot_mark"])
+    w.lookup("auto_end", [f"sub {auto.slot} by {auto.end}"])
     w.lookup("auto_slots", [f"sub {sign}' lookup auto_slot_mark {sign}"])
-    lookups += ["auto_starts", "auto_ends", "auto_slots"]
+    lookups += ["auto_starts", "auto_ends", "auto_end", "auto_slots"]
 
     # 3. stack: at a sign, the slot after it becomes an implied control,
     # or an inner slot where the entry joins nothing
@@ -491,9 +494,16 @@ def _gsub_insert(n, w, lone, ign):
         for level in L.SHRINK_LEVELS:
             w.lookup(f"ins_shrink_{level}", [f"sub {n.lone(c)} by {i.shrunk(c, k)}"
                                               for c, k in i.shrunk_glyphs if k == level])
-        rules = [f"sub {n.lone(b)}' lookup ins_shrink_{level} {cls(i.shaped(control, s) for s in shapes)} "
-                 f"{cls(n.lone(c) for c in sorted(found))}"
-                 for (b, control, level), found in sorted(i.shrinks.items())]
+        # the birds that shrink to the same level before the same corner and
+        # signs share a rule (a subtable each). A bird and corner shrink to
+        # one level for any one sign, so no two rules match the same text
+        # and their order does not matter
+        birds = defaultdict(list)
+        for (b, control, level), found in sorted(i.shrinks.items()):
+            birds[(control, level, tuple(sorted(found)))].append(b)
+        rules = [f"sub {cls(n.lone(b) for b in bs)}' lookup ins_shrink_{level} "
+                 f"{cls(i.shaped(control, s) for s in shapes)} {cls(n.lone(c) for c in found)}"
+                 for (control, level, found), bs in birds.items()]
         w.lookup("ins_shrink", rules, table="gsub")
 
     # 3. zone: the width, then the height, each a rule per corner, shape
