@@ -2,6 +2,8 @@
 
 **Thoth** is an open-source Egyptian hieroglyph font from the [Bastet](https://github.com/bastet00) project that stacks and groups signs into quadrats.
 
+![Five words, ḥtp, nfr, ꜥnḫ, snb and rn: in other fonts each is a row of signs; in Thoth each is one stacked group](documentation/image1.png)
+
 It is named after Thoth (Egyptian *ḏḥwtj*, Djehuty; Arabic تحوت), the god who in Egyptian belief gave people the hieroglyphic script. Google Fonts does not allow script names in a family name, so the name is just "Thoth".
 
 Status: **work in progress** – the font builds and contains the signs, imported from Noto Sans Egyptian Hieroglyphs, and the Latin letters for Egyptological transliteration (ꜣ ꜥ ḥ ḫ ẖ š ṯ ḏ and the rest), taken from Noto Sans (see [Credits](#credits)). It stacks flat groups (the vertical and horizontal joiners, U+13430 and U+13431) and corner insertions (U+13432–U+13435), also in plain text without any of these controls (see below); segments and overlays come next.
