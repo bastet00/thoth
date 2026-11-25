@@ -55,6 +55,9 @@ The rules, each stated once:
     controls of a table of known sign sequences were there, and two
     half-block signs in a row (low and wide) stack one above the other
     (section 7, rules A1 to A9). Explicit controls always win.
+12. A sign may be mirrored and damaged by the modifiers that follow it
+    (section 8, rules M1 to M8); a modified sign takes part in all of the
+    above exactly as the sign does.
 
 Rounding. The font can only add whole numbers that its glyphs carry, so
 every position here is such a sum, rounded as the font rounds it: a unit
@@ -340,18 +343,20 @@ def _fit_one(size, step, limit):
     return next(level for level in range(len(LEVEL_HEIGHTS)) if size * step(level) <= limit)
 
 
-def layout(codepoints, signs, table=None):
+def layout(codepoints, signs, table=None, modifiers=True):
     """Lay out text: [Cluster] for its signs and controls, in text order.
 
     Characters that are neither (letters, spaces) get no cluster: the font
     shapes them as usual. table: the automatic stacking table (section 7,
     automatic_table()), or None for the font with the automatic layer
-    switched off.
+    switched off. modifiers: False once section 8 has taken them out.
     """
+    if modifiers and any(c in MODIFIERS for c in codepoints):
+        return modified_layout(codepoints, signs, table)  # section 8
     if table is not None:
         text, origin = automatic(codepoints, table, signs)
         return [cluster._replace(start=origin[cluster.start], end=origin[cluster.end - 1] + 1)
-                for cluster in layout(text, signs)]
+                for cluster in layout(text, signs, modifiers=False)]
     clusters = []
     for start, end in runs(codepoints):
         run = codepoints[start:end]
@@ -466,11 +471,16 @@ def _round(value):
 
 
 def ink_box(glyph, signs):
-    """The ink box of a drawn glyph, relative to the start of its cluster."""
+    """The ink box of a drawn glyph, relative to the start of its cluster.
+    A negative scale mirrors the outline across (section 8)."""
+    if is_hatch(glyph.codepoint):
+        x0, y0, x1, y1 = hatch_rect(glyph.codepoint)
+        return glyph.x + x0, glyph.y + y0, glyph.x + x1, glyph.y + y1
     box = signs[glyph.codepoint].box if glyph.codepoint in signs else CONTROL_BOX
+    across = sorted((glyph.x + glyph.scale * box[0], glyph.x + glyph.scale * box[2]))
     return (
-        glyph.x + glyph.scale * box[0], glyph.y + glyph.scale * box[1],
-        glyph.x + glyph.scale * box[2], glyph.y + glyph.scale * box[3],
+        across[0], glyph.y + abs(glyph.scale) * box[1],
+        across[1], glyph.y + abs(glyph.scale) * box[3],
     )
 
 
@@ -1047,3 +1057,316 @@ def automatic(codepoints, table, signs=None):
             text.append(control)
             origin.append(i)
     return text, origin
+
+
+# --- 8. Sign modifiers: mirroring and damage ---------------------------------
+#
+# Unicode 15 added a control that mirrors the sign before it (U+13440) and
+# fifteen modifiers that mark the sign before it as damaged (U+13447 to
+# U+13455). The Unicode core specification (chapter 11, "Egyptian
+# Hieroglyphs": "Mirroring", "Damage Modifiers") says what they mean; the
+# proposal L2/21-248, table 3, gives their place:
+#
+#     literal ::= sign [ VS1 | VS2 | VS3 ] [ mirror ] [ damaged ]
+#
+# Damage divides "the surface" of a sign into four quarters; the modifier,
+# less U+13446, is four bits, one for each damaged quarter: 1 top start,
+# 2 bottom start, 4 top end, 8 bottom end. Start is where the line starts
+# (the left in left-to-right text, where the signs of the code charts
+# face), as for the corner insertions of section 6.
+#
+# The rules, each stated once:
+#
+# M1. A literal is a hieroglyph (blanks and lost signs are not: they take
+#     no modifier), then the mirror control or not, then one damage
+#     modifier or not, in this order. Between them may stand any default
+#     ignorable but ZWJ and ZWNJ: Unicode allows VS1 to VS3 (rotation)
+#     there; Thoth has no rotated forms and draws no selector, and cannot
+#     tell the other invisible ignorables from them.
+# M2. The modifiers of a literal belong to its sign. They are taken out of
+#     the text before sections 4 to 7 lay it out, so a modified sign is
+#     grouped, inserted and stacked automatically exactly as the sign is;
+#     in particular a modifier never starts or ends a word (rule A2):
+#     Unicode gives it no such meaning. The literal is one cluster with its
+#     sign, or with the sign's group.
+# M3. A modifier that is not part of a literal (no sign before it, a second
+#     one, the mirror after a damage modifier, after a blank, after ZWJ) is
+#     drawn as today: the mirror control is a control, so its run is drawn
+#     unstacked with the control as its box (rule 9); a damage modifier is
+#     drawn as the same box, with the advance of a control, and like any
+#     other character it ends a run (rule 9) and a stretch (rule A1).
+# M4. Mirror: the sign is drawn mirrored about the vertical line through
+#     the middle of its ink, so that its ink box, cell, level, advance and
+#     place stay as they are (a Glyph with a negative scale: x is scaled by
+#     scale, y by -scale). A sign that is horizontally symmetric (every
+#     on-curve point of its flipped outline within SYMMETRY units of one of
+#     the outline, and back) is drawn as it is and the control draws
+#     nothing: Unicode says such signs "do not require mirroring" and lets
+#     a font show the control; Thoth does not.
+# M5. A corner control after a mirrored (not symmetric) bird (MIRRORED_BASES)
+#     is read as its mirror image (start and end swapped): the zones of a
+#     mirrored base are those of the sign with start and end swapped,
+#     mirrored about the middle of its ink, so the line's start and end
+#     stay where they are while the bird turns. The inserted sign stands
+#     mirrored with its zone. After any other mirrored sign a corner control
+#     is not supported: it is read as an unsupported control, so its run is
+#     drawn unstacked with the control as its box (rule 9).
+# M6. Damage shades the quarters the modifier names of the sign's cell at
+#     the level it is drawn at, split by the cell's middle lines. The cell
+#     of a sign in a group, and of an inserted sign, is the one it stands in
+#     (its ink on the bottom of the cell, centred across: the origin of its
+#     variant); the cell of a lone sign, and of the base of an insertion,
+#     is placed around its ink, the bottom of the cell on the bottom of the
+#     ink and centred on it, at the level it is drawn at (a shrunk bird's).
+#     The middle point is the middle of the cell, rounded down.
+# M7. Shading is diagonal lines rising towards the end at 45 degrees,
+#     HATCH_PERIOD apart across and HATCH_STROKE wide across, one line
+#     through the middle point, so the quarters join. Each damaged quarter
+#     is one piece: a rectangle from the middle point outwards,
+#     HATCH_TILE times v across and HATCH_TILE times w up, v and w the
+#     quarter's size in tiles rounded to the nearest and at least one,
+#     reaching HATCH_OVERLAP over the middle lines so that pieces join
+#     without a seam. The lines keep their size and spacing at every level,
+#     a texture on the surface; the pieces follow the sign in its cluster,
+#     its quarters in the order of their bits.
+# M8. A sign in a group or inserted is mirrored only at MIRROR_LEVELS, the
+#     levels of about 95 % of the signs in the groups of the owner's
+#     dictionary. At a smaller level it is drawn as it is, and the mirror
+#     control is drawn small over the middle of its cell (MIRROR_BOX of the
+#     fallback box), as Unicode lets a font show the control. Lone signs and
+#     shrunk birds are always mirrored.
+#
+# Why these values.
+# - A symmetry tolerance of 3 units is below a pixel at every size the
+#   signs are read at: a sign within it looks the same mirrored.
+# - Tiles of 45 units, the half unit: a quarter of a cell is a whole number
+#   of half units high and up to a quarter unit off across, so the shading
+#   ends within a third of a gap of the quarter's edge.
+# - Lines 120 apart and 22 wide across (16 thick): at 26 pixels to the em
+#   about 3 pixels apart and under half a pixel thick, so the sign under
+#   them still reads; at 40 pixels about 5 apart. Lines 90 apart and 26
+#   wide made a grey block at 26 pixels in the first proof.
+# - Mirrored zones for birds only: the owner's corner insertions are a
+#   bird's (rule O5); those of all 683 bases that are not symmetric would
+#   cost 34 KB, the birds' cost 5 KB.
+# - Four levels of mirrored variants: each further level costs about 50 KB
+#   (818 glyphs and their anchors); levels 4 to 6 hold about 5 % of the
+#   signs in groups.
+
+MIRROR = 0x13440
+DAMAGE = range(0x13447, 0x13456)
+MODIFIERS = (MIRROR, *DAMAGE)
+JOINERS_ZW = (0x200C, 0x200D)  # the ignorables that break a literal (rule M1)
+QUADRANTS = (1, 2, 4, 8)  # top start, bottom start, top end, bottom end
+SYMMETRY = 3
+HATCH_TILE, HATCH_PERIOD, HATCH_STROKE, HATCH_OVERLAP = 45, 120, 22, 4
+MIRROR_LEVELS = range(4)
+MIRROR_BOX = 0.25  # the scale of the fallback box drawn over a sign it cannot mirror
+HATCH = 0x110000  # pieces of shading are drawn glyphs with code points beyond Unicode
+STRAY = 0xFFFC  # what a stray damage modifier is while sections 4 to 7 read the text
+MIRRORED_BASES = BIRDS  # rule M5
+SWAPPED = {TOP_START: TOP_END, TOP_END: TOP_START, BOTTOM_START: BOTTOM_END, BOTTOM_END: BOTTOM_START}
+
+
+def passed_over(codepoint):
+    """Rule M1: an ignorable that may stand inside a literal."""
+    from glyphs import IGNORABLE  # glyphs.py imports this file: imported when needed
+    return codepoint in IGNORABLE and codepoint not in JOINERS_ZW
+
+
+def quadrants(codepoint):
+    """The quarters a damage modifier names: a sum of QUADRANTS."""
+    return codepoint - 0x13446
+
+
+def literals(codepoints):
+    """Rule M1: {index of a sign: (index of its mirror control or None,
+    index of its damage modifier or None)} for every sign with a modifier."""
+    found, count = {}, len(codepoints)
+
+    def after(index):
+        index += 1
+        while index < count and passed_over(codepoints[index]):
+            index += 1
+        return index
+
+    for index, codepoint in enumerate(codepoints):
+        if codepoint not in HIEROGLYPHS:
+            continue
+        at, mirror, damage = after(index), None, None
+        if at < count and codepoints[at] == MIRROR:
+            mirror, at = at, after(at)
+        if at < count and codepoints[at] in DAMAGE:
+            damage = at
+        if mirror is not None or damage is not None:
+            found[index] = (mirror, damage)
+    return found
+
+
+_symmetric = {}
+
+
+def symmetric(codepoint, font=None):
+    """Rule M4: whether a sign looks the same mirrored. font: the source
+    (a ufoLib2 Font), by default sources/Thoth-Regular.ufo."""
+    if codepoint not in _symmetric:
+        from fontTools.pens.recordingPen import DecomposingRecordingPen
+        if font is None:
+            import ufoLib2
+            font = _symmetric.setdefault("font", ufoLib2.Font.open(SOURCE))
+        glyph = next(g for g in font if codepoint in g.unicodes)
+        pen = DecomposingRecordingPen(font)
+        glyph.draw(pen)
+        points = [args[-1] for _, args in pen.value if args]
+        bounds = BoundsPen(font)
+        glyph.draw(bounds)
+        middle2 = bounds.bounds[0] + bounds.bounds[2] if bounds.bounds else 0
+        flipped = [(middle2 - x, y) for x, y in points]
+
+        def near(one, other):
+            return all(min(abs(a - c) + abs(b - d) for c, d in other) <= SYMMETRY for a, b in one)
+        _symmetric[codepoint] = near(flipped, points) and near(points, flipped)
+    return _symmetric[codepoint]
+
+
+def mirror_box(x, y):
+    """Rule M8: the small box of the mirror control, centred on (x, y)."""
+    return Glyph(MIRROR, x - _round(MIRROR_BOX * (CONTROL_BOX[0] + CONTROL_BOX[2]) / 2),
+                 y - _round(MIRROR_BOX * (CONTROL_BOX[1] + CONTROL_BOX[3]) / 2), 0, MIRROR_BOX)
+
+
+def mirrored_glyph(glyph, signs):
+    """Rule M4: a drawn sign mirrored about the middle of its ink."""
+    box = signs[glyph.codepoint].box
+    return glyph._replace(x=glyph.x + _round(abs(glyph.scale) * (box[0] + box[2])), scale=-glyph.scale)
+
+
+def strip_modifiers(codepoints, signs):
+    """Rules M1 to M3 and M5: (text, origin, mods). text: codepoints with
+    the modifiers of literals left out, a stray damage modifier replaced by
+    STRAY and a corner control after a mirrored literal swapped; origin: for
+    each character of text its index in codepoints; mods: {index in text of
+    a modified sign: (mirrored, quarters, end)}, end one past its last
+    modifier in codepoints. Mirrored is False for a symmetric sign."""
+    found = literals(codepoints)
+    taken = {i for pair in found.values() for i in pair if i is not None}
+    text, origin, mods, turned = [], [], {}, None
+    for index, codepoint in enumerate(codepoints):
+        if index in taken:
+            continue
+        if turned is not None and codepoint in SWAPPED:  # rule M5
+            codepoint = SWAPPED[codepoint] if turned in MIRRORED_BASES else MIRROR
+        if not passed_over(codepoint):
+            turned = None
+        if index in found:
+            mirror, damage = found[index]
+            mirrored = mirror is not None and not symmetric(codepoint)
+            mods[len(text)] = (mirrored, quadrants(codepoints[damage]) if damage is not None else 0,
+                               max(i for i in found[index] if i is not None) + 1)
+            turned = codepoint if mirrored else None
+        text.append(STRAY if codepoint in DAMAGE else codepoint)
+        origin.append(index)
+    return text, origin, mods
+
+
+def hatch_code(quadrant, across, up):
+    """The code point of a piece of shading (rule M7)."""
+    return HATCH + (quadrant << 12) + (across << 6) + up
+
+
+def is_hatch(codepoint):
+    return codepoint >= HATCH
+
+
+def hatch_piece(code):
+    """(quadrant, across, up) of a piece: the inverse of hatch_code()."""
+    code -= HATCH
+    return code >> 12, (code >> 6) & 63, code & 63
+
+
+def hatch_rect(code):
+    """Rule M7: the rectangle a piece shades, from the middle point."""
+    quadrant, across, up = hatch_piece(code)
+    top, end = quadrant in (1, 4), quadrant in (4, 8)
+    x = (-HATCH_OVERLAP, across * HATCH_TILE) if end else (-across * HATCH_TILE, HATCH_OVERLAP)
+    y = (-HATCH_OVERLAP, up * HATCH_TILE) if top else (-up * HATCH_TILE, HATCH_OVERLAP)
+    return x[0], y[0], x[1], y[1]
+
+
+def tiles(size):
+    """Rule M7: half of a cell's side, in tiles."""
+    return max(1, _round(size / 2 / HATCH_TILE))
+
+
+def damage_size(sign, level):
+    """Rule M6: (across, up) of a sign's quarters at a level, in tiles, and
+    the height of its middle point over the bottom of its cell."""
+    width, height = sign.cell[0] * half_unit(level), sign.cell[1] * unit(level)
+    return tiles(width), tiles(height), height // 2
+
+
+def damage_pieces(quarters, sign, level, x, y):
+    """Rules M6 and M7: the pieces of shading of a cell whose bottom
+    middle is at (x, y)."""
+    across, up, middle = damage_size(sign, level)
+    return [Glyph(hatch_code(q, across, up), x, y + middle, 0, 1.0) for q in QUADRANTS if quarters & q]
+
+
+def lone_middle(sign):
+    """Rule M6: the bottom middle of the cell around a lone sign's ink, as
+    the source draws it lifted (also shrunk, which keeps both)."""
+    return (sign.box[0] + sign.box[2]) // 2, sign.box[1] + sign.lift
+
+
+def modified_layout(codepoints, signs, table=None):
+    """Rules M1 to M8: layout() of text with modifiers."""
+    text, origin, mods = strip_modifiers(codepoints, signs)
+    implied = automatic(text, table, signs) if table is not None else (text, range(len(text)))
+    clusters = []
+    for c in layout(text, signs, table, modifiers=False):
+        run = [t for t, o in zip(*implied) if c.start <= o < c.end]
+        inserted = c.stacked and is_insertion(run) and insertion(*run, signs) is not None
+        members = [i for i in range(c.start, c.end) if is_sign(text[i])]
+        glyphs = list(c.glyphs)
+        if inserted and mods.get(members[0], (False,))[0]:  # rule M5: the inserted sign turns with its base
+            base, sign = glyphs
+            box, dx = signs[base.codepoint].box, sign_offset(signs[sign.codepoint], sign.level)[0]
+            glyphs[1] = sign._replace(x=box[0] + box[2] - sign.x + 2 * dx)
+        drawn = []
+        for index, glyph in enumerate(glyphs):
+            at = members[index] if c.stacked or is_sign(text[c.start]) else None
+            mirrored, quarters, _ = mods.get(at, (False, 0, 0))
+            sign = signs.get(glyph.codepoint)
+            if not (mirrored or quarters):
+                drawn.append(glyph)
+                continue
+            variant = c.stacked and not (inserted and index == 0)
+            if variant:  # its origin
+                dx, dy = sign_offset(sign, glyph.level)
+                x, y = glyph.x - dx, glyph.y - dy
+            else:  # lone, or the base of an insertion
+                x, y = lone_middle(sign)
+            pieces = damage_pieces(quarters, sign, glyph.level, x, y) if quarters else []
+            if mirrored and variant and glyph.level not in MIRROR_LEVELS:  # rule M8
+                drawn += [glyph, mirror_box(x, y + damage_size(sign, glyph.level)[2])] + pieces
+            else:
+                drawn += [mirrored_glyph(glyph, signs) if mirrored else glyph] + pieces
+        end = mods[c.end - 1][2] if c.end - 1 in mods else origin[c.end - 1] + 1
+        clusters.append(c._replace(start=origin[c.start], end=end, glyphs=tuple(drawn)))
+    for index, codepoint in enumerate(text):  # rule M3: a stray damage modifier
+        if codepoint == STRAY:
+            original = codepoints[origin[index]]
+            clusters.append(Cluster(origin[index], origin[index] + 1, CONTROL_ADVANCE,
+                                    (Glyph(original, 0, 0, 0, 1.0),), False))
+    return sorted(clusters, key=lambda c: c.start)
+
+
+def implied_text(codepoints, table=None):
+    """The text the stacking rules read, with the controls the automatic
+    layer implies, and for each character its index in codepoints: what
+    the font has in place of the text once its modifiers are folded."""
+    signs = default_signs()
+    text, origin, _ = strip_modifiers(codepoints, signs) if any(c in MODIFIERS for c in codepoints) \
+        else (list(codepoints), list(range(len(codepoints))), {})
+    implied, inner = automatic(text, table, signs) if table is not None else (text, range(len(text)))
+    return implied, [origin[i] for i in inner]

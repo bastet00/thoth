@@ -137,7 +137,7 @@ MALFORMED = [
     [X1, V, H, N35], [X1, V, 0x20, N35], [X1, 0x200D, V, N35],
     [SEGMENT, X1, V, N35], [X1, V, N35, END], [SEGMENT, X1, V, N35, END],
     [M17, H, SEGMENT, X1, V, N35, V, A1], [X1, OVERLAY, O1, N35], [A1, INSERT, O1, V, X1],
-    [A1, MIRROR], [I9, V, N35, V, 0x13113, 0x13433, A1], [*range(0x13430, 0x13441)],
+    [I9, V, N35, V, 0x13113, 0x13433, A1], [*range(0x13430, 0x13441)],
     [A1, V, A1, V, A1, V, A1],  # 48 units high: over the cap
     [N35, H, N35, H, N35],  # 78 half units wide: over the cap
     [D58, V, D58, V, D58, V, D58, V, N35],  # 51 units high
@@ -832,11 +832,159 @@ def test_automatic(signs):
           f"{len(AUTOMATIC)} golden texts; shape rule: {len(half)} half-block signs, {pairs} pairs in random text")
 
 
+# --- sign modifiers: mirroring and damage (layout section 8) ----------------
+
+MIR, DAMAGED = 0x13440, 0x13455  # the mirror control; damage at all four quarters
+TOP_START_D, BOTTOM_D, BS_TE_D = 0x13447, 0x13450, 0x1344C  # 1; 2 + 8; 2 + 4
+G1_, VS1 = 0x1313F, 0xFE00
+
+
+def piece(quarter, across, up):
+    return L.HATCH + (quarter << 12) + (across << 6) + up
+
+
+# Golden cases, written here: (code point, x, y, level, scale) per glyph; a
+# negative scale is a sign mirrored across the middle of its ink.
+MODIFIER_GOLDEN = [
+    ([A1, MIR],  # a lone sign mirrored: ink 49..849, so moved by 898
+     [(898, [(A1, 898, 0, 0, -1.0)])]),
+    ([A1, DAMAGED],  # all four quarters of A1's cell (19 x 12): 10 by 12 tiles from its middle
+     [(898, [(A1, 0, 0, 0, 1.0), (piece(1, 10, 12), 449, 540, 0, 1.0), (piece(2, 10, 12), 449, 540, 0, 1.0),
+             (piece(4, 10, 12), 449, 540, 0, 1.0), (piece(8, 10, 12), 449, 540, 0, 1.0)])]),
+    ([X1, BS_TE_D],  # bottom start and top end of the bread's cell (13 x 4), lifted with the bread
+     [(633, [(X1, 0, 189, 0, 1.0), (piece(2, 7, 4), 316, 571, 0, 1.0), (piece(4, 7, 4), 316, 571, 0, 1.0)])]),
+    ([D21, BOTTOM_D, V, N35],  # rn with the mouth damaged at the bottom: in its cell in the group
+     [(1234, [(D21, 28, 604, 0, 1.0), (piece(2, 13, 4), 617, 779, 0, 1.0), (piece(8, 13, 4), 617, 779, 0, 1.0),
+              (N35, 18, 202, 0, 1.0)])]),
+    ([D21, MIR, V, N35],  # the mouth is symmetric: drawn as it is, the control draws nothing
+     [(1234, [(D21, 28, 604, 0, 1.0), (N35, 18, 202, 0, 1.0)])]),
+    ([A1, MIR, V, O1],  # level 4 has no mirrored variants: the sign as it is, the small box over its middle
+     [(820, [(A1, 141, 432, 4, 0.598), (MIR, 323, 631, 0, 0.25), (O1, 21, -62, 4, 0.564)])]),
+    ([G1_, MIR, TS, X1],  # the vulture turned, the bread on its back at the line's start (rule M5)
+     [(985, [(G1_, 986, 0, 0, -1.0), (X1, 19, 702, 3, 0.665)])]),
+    ([A1, MIR, TE, X1],  # a corner after another mirrored sign: unsupported, unstacked
+     [(898, [(A1, 898, 0, 0, -1.0)]), (698, [(MIR, 0, 0, 0, 1.0)]), (633, [(X1, 0, 189, 0, 1.0)])]),
+    ([A1, TOP_START_D, MIR],  # the mirror after the damage: a stray control
+     [(898, [(A1, 0, 0, 0, 1.0), (piece(1, 10, 12), 449, 540, 0, 1.0)]), (698, [(MIR, 0, 0, 0, 1.0)])]),
+    ([TOP_START_D, A1],  # a damage modifier with no sign before it: its box
+     [(698, [(TOP_START_D, 0, 0, 0, 1.0)]), (898, [(A1, 0, 0, 0, 1.0)])]),
+]
+
+
+def strip(text):
+    """The text without the modifiers that follow a hieroglyph (no
+    ignorables in these texts), corner controls after a mirrored sign as
+    rule M5 reads them: what the stacking rules must see."""
+    out, after, turned = [], None, None
+    for c in text:
+        if c in L.MODIFIERS and after is not None and (c == MIR and after == "sign" or c in L.DAMAGE and after
+                                                         in ("sign", "mirror")):
+            after = "mirror" if c == MIR else "done"
+            if c == MIR and not L.symmetric(out[-1]):
+                turned = out[-1]
+            continue
+        if c in L.SWAPPED and turned is not None:
+            c = L.SWAPPED[c] if turned in L.BIRDS else MIR
+        after, turned = ("sign" if c in L.HIEROGLYPHS else None), None
+        out.append(L.STRAY if c in L.DAMAGE else c)
+    return out
+
+
+def test_modifiers(signs):
+    for codepoints, expected in MODIFIER_GOLDEN:
+        got = result(codepoints, signs)
+        check(got == expected, f"{label(codepoints)}:\n  got      {got}\n  expected {expected}")
+    # rule M1: what belongs to a sign
+    lits = {
+        (A1, MIR, TOP_START_D): {0: (1, 2)}, (A1, TOP_START_D, MIR): {0: (None, 1)}, (A1, MIR, MIR): {0: (1, None)},
+        (A1, VS1, MIR): {0: (2, None)}, (A1, 0x200D, MIR): {}, (A1, MIR, 0x200C, TOP_START_D): {0: (1, None)},
+        (FULL_BLANK, MIR): {}, (MIR, A1): {}, (A1, V, MIR): {}, (A1, MIR, VS1, TOP_START_D): {0: (1, 3)},
+    }
+    for text, expected in lits.items():
+        check(L.literals(list(text)) == expected, f"literals {label(text)}: {L.literals(list(text))}")
+    hieroglyphs = [c for c in sorted(signs) if c in L.HIEROGLYPHS]
+    symmetric = [c for c in hieroglyphs if L.symmetric(c)]
+    check(len(symmetric) == 254 and N35 in symmetric and D21 in symmetric and A1 not in symmetric,
+          f"{len(symmetric)} symmetric signs")
+    # random text: the modifiers change nothing but the drawing (rule M2),
+    # a mirrored sign keeps its ink box (M4), the pieces of a damaged sign
+    # meet at the middle of its cell and stay near it (M6, M7), each
+    # literal is in one cluster, and nothing is hidden
+    rng = random.Random(31)
+    tall = [c for c in hieroglyphs if signs[c].cell[1] == 12]
+    small = [c for c in hieroglyphs if L.insertable(signs[c])]
+    pool = (MIR, MIR, *L.DAMAGE, V, H, TE, TS, 0x20)
+    counts = {"mirrored": 0, "pieces": 0, "boxes": 0}
+    for n in range(2500):
+        text = []
+        for _ in range(rng.randint(1, 7)):
+            r = rng.random()
+            if r < 0.6:
+                text.append(rng.choice(tall if r < 0.15 else small if r < 0.3 else hieroglyphs))
+                text += [MIR] * (rng.random() < 0.3) + [rng.choice(L.DAMAGE)] * (rng.random() < 0.3)
+            else:
+                text.append(rng.choice(pool))
+        laid = L.layout(text, signs)
+        plain = L.layout(strip(text), signs, modifiers=False)
+        kept = [[g for g in c.glyphs if not L.is_hatch(g.codepoint) and not (g.codepoint == MIR and
+                                                                              g.scale == L.MIRROR_BOX)]
+                for c in laid]
+        unturned = [[g._replace(x=g.x - L._round(-g.scale * (signs[g.codepoint].box[0] + signs[g.codepoint].box[2])),
+                                scale=-g.scale) if g.scale < 0 else g for g in glyphs] for glyphs in kept]
+        boxes_ = [(c.advance, tuple(g)) for c, g in zip(laid, unturned) if c.glyphs[0].codepoint not in L.DAMAGE]
+        check(boxes_ == [(c.advance, c.glyphs) for c in plain], f"{label(text)}: the modifiers move a sign")
+        for c in laid:
+            for g in c.glyphs:
+                if g.scale < 0:
+                    counts["mirrored"] += 1
+                    flipped, unflipped = L.ink_box(g, signs), L.ink_box(L.mirrored_glyph(g, signs)._replace(
+                        x=g.x - L._round(-g.scale * (signs[g.codepoint].box[0] + signs[g.codepoint].box[2]))), signs)
+                    check(all(abs(a - b) <= 1 for a, b in zip(flipped, unflipped)), f"{label(text)}: a mirror moved the ink")
+            counts["boxes"] += sum(g.codepoint == MIR and g.scale == L.MIRROR_BOX for g in c.glyphs)
+            runs_, quarters = [], []  # the pieces after each sign
+            for g in c.glyphs:
+                if L.is_hatch(g.codepoint):
+                    quarters.append((L.hatch_piece(g.codepoint)[0], g.x, g.y))
+                elif not (g.codepoint == MIR and g.scale == L.MIRROR_BOX):
+                    runs_.append(quarters)
+                    quarters = []
+            runs_.append(quarters)
+            for quarters in runs_:
+                counts["pieces"] += len(quarters)
+                check([q for q, _, _ in quarters] == sorted({q for q, _, _ in quarters})
+                      and len({(x, y) for _, x, y in quarters}) <= 1,
+                      f"{label(text)}: the pieces of a sign are doubled, out of order or apart")
+        # each literal is inside the cluster of its sign; a stray modifier is a box of its own
+        for index, (mirror, damage) in L.literals(text).items():
+            (owner,) = [c for c in laid if c.start <= index < c.end]
+            check(all(i is None or owner.start <= i < owner.end for i in (mirror, damage)),
+                  f"{label(text)}: a modifier is not in its sign's cluster")
+        taken = {i for pair in L.literals(text).values() for i in pair if i is not None}
+        for index, c in enumerate(text):
+            if c in L.MODIFIERS and index not in taken:
+                check(any(cl.start == index and cl.glyphs[0].codepoint == c for cl in laid),
+                      f"{label(text)}: a stray modifier at {index} has no box")
+    check(counts["mirrored"] > 500 and counts["pieces"] > 1000 and counts["boxes"] > 10,
+          f"random modified text reaches too few cases: {counts}")
+    # the pieces of a damaged sign: from the middle of its cell, within half a
+    # tile (or the one tile at least) of the cell's edges
+    for c in hieroglyphs[::3]:
+        sign = signs[c]
+        for k in range(len(L.LEVEL_HEIGHTS)):
+            across, up, middle = L.damage_size(sign, k)
+            width, height = sign.cell[0] * L.half_unit(k), sign.cell[1] * L.unit(k)
+            slack = L.HATCH_TILE / 2 + 1
+            check(abs(across * L.HATCH_TILE - width / 2) <= max(slack, L.HATCH_TILE - width / 2)
+                  and abs(up * L.HATCH_TILE - height / 2) <= max(slack, L.HATCH_TILE - height / 2)
+                  and middle == height // 2, f"U+{c:X} at level {k}: quarters {across} x {up} tiles, cell {width} x {height}")
+    print(f"  modifiers: {len(MODIFIER_GOLDEN)} golden cases, 2500 random texts ({counts})")
+
+
 def main():
     signs = L.sign_table(SOURCE)
     tests = (test_constants, test_signs, test_grammar, test_golden, test_golden_notices_constants,
              test_owner_rules, test_rounding, test_insertion, test_malformed, test_random,
-             test_automatic)
+             test_automatic, test_modifiers)
     for test in tests:
         try:
             test(signs)
