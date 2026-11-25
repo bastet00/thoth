@@ -832,11 +832,144 @@ def test_automatic(signs):
           f"{len(AUTOMATIC)} golden texts; shape rule: {len(half)} half-block signs, {pairs} pairs in random text")
 
 
+# --- enclosures (layout section 8) -------------------------------------------
+
+BEGIN, END_ENC, BEGIN_W, END_W = 0x1343C, 0x1343D, 0x1343E, 0x1343F
+V11A, V11B, V11D, O6A, O6D, O36A, O36B, O36C, O36D = (
+    0x13379, 0x1337A, 0x1342F, 0x13258, 0x1325B, 0x13286, 0x13287, 0x13288, 0x13289)
+AA1, G43, G38, N5 = 0x1340D, 0x13171, 0x1316C, 0x131F3
+KHUFU = [V11A, BEGIN, AA1, G43, I9, G43, END_ENC, V11B]
+ENCLOSURE_GOLDEN = [  # text, and per cluster (start, end, advance, glyphs, frame); written here
+    (KHUFU, [
+        (0, 2, 617, [], [(("piece", V11A), 0, 0)]),
+        (2, 3, 694, [(AA1, 9, 83, 0, 1.0)], [(("line", "plain", 512, "start"), 0, 0), (("line", "plain", 512, "end"), 694, 0)]),
+        (3, 4, 874, [(G43, 7, 13, 0, 1.0)], [(("line", "plain", 512, "start"), 0, 0), (("line", "plain", 512, "end"), 874, 0)]),
+        (4, 5, 1324, [(I9, 7, 325, 0, 0.872)],
+         [(("line", "plain", 1024, "start"), 0, 0), (("line", "plain", 1024, "end"), 1324, 0)]),
+        (5, 6, 874, [(G43, 7, 13, 0, 1.0)], [(("line", "plain", 512, "start"), 0, 0), (("line", "plain", 512, "end"), 874, 0)]),
+        (6, 8, 617, [], [(("piece", V11B), 0, 0)]),
+    ]),
+    ([BEGIN_W, D21, V, N35, END_W], [  # no delimiters: the lines alone, the controls empty clusters
+        (0, 1, 0, [], []),
+        (1, 4, 1234, [(D21, 28, 604, 0, 1.0), (N35, 18, 202, 0, 1.0)],
+         [(("line", "walled", 1024, "start"), 0, 0), (("line", "walled", 1024, "end"), 1234, 0),
+          (("merlons", "walled", 8), 617, 0)]),
+        (4, 5, 0, [], []),
+    ]),
+]
+ENCLOSURE_UNFORMED = [  # rule E1: nothing forms; every control a box, every delimiter a lone sign
+    [V11A, BEGIN, AA1, G43], [BEGIN, AA1], [AA1, END_ENC, V11B], [V11A, END_ENC, AA1, BEGIN, V11B],
+    [V11A, BEGIN, END_ENC, V11B], [BEGIN, END_ENC], [V11A, BEGIN, AA1, END_W, V11B],
+    [V11A, BEGIN, AA1, 0x20, G43, END_ENC, V11B], [V11A, BEGIN, AA1, 0x200D, G43, END_ENC, V11B],
+    [V11A, BEGIN, 0x200C, AA1, END_ENC, V11B], [O36C, BEGIN_W, AA1, BEGIN_W, END_W, O36D],
+    [V11A, BEGIN, G38, 0x13434, X1, END_ENC, V11B],  # rule E5: the pintail with t is too tall
+]
+
+
+def enclosure_text(rng, codepoints):
+    text = [rng.choice(codepoints) for _ in range(rng.randint(0, 2))]
+    plain = rng.random() < 0.7
+    if rng.random() < 0.85:
+        text.append(rng.choice(L.OPENINGS))
+    text.append(BEGIN if plain else BEGIN_W)
+    for _ in range(rng.randint(1, 6)):
+        r = rng.random()
+        if r < 0.4:
+            text.append(rng.choice(codepoints))
+        elif r < 0.75:
+            text += group([[rng.choice(codepoints) for _ in range(rng.randint(1, 2))] for _ in range(rng.randint(1, 3))])
+        elif r < 0.9:
+            text += [rng.choice(codepoints), rng.choice(list(L.CORNERS)), rng.choice(codepoints)]
+        else:
+            text.append(rng.choice((V, H, 0x13437, 0x20, BEGIN, END_ENC)))
+    text.append(END_ENC if plain else END_W)
+    if rng.random() < 0.85:
+        text.append(rng.choice(L.CLOSINGS))
+    return text
+
+
+def check_enclosed(codepoints, signs, table=None):
+    """Rules E1 to E7 as properties of a laid-out text; returns whether an
+    enclosure formed."""
+    name = label(codepoints)
+    clusters = L.layout(codepoints, signs, table)
+    check([i for c in clusters for i in range(c.start, c.end)]
+          == [i for i, c in enumerate(codepoints) if L.is_sign(c) or c in L.CONTROLS],
+          f"{name}: the clusters do not cover the text in order")
+    drawn = sorted([g.codepoint for c in clusters for g in c.glyphs if L.is_sign(g.codepoint)]
+                   + [f.part[1] for c in clusters for f in c.frame if f.part[0] == "piece"])
+    check(drawn == sorted(c for c in codepoints if L.is_sign(c)), f"{name}: a sign is lost or doubled")
+    formed = False
+    for c in clusters:
+        lines = [f for f in c.frame if f.part[0] == "line"]
+        if not lines:
+            continue
+        formed = True
+        (start, end) = sorted(lines, key=lambda f: f.part[3] != "start")
+        length = start.part[2]
+        check(start.x == 0 and end.x == c.advance and length <= c.advance <= 2 * length,
+              f"{name}: the lines under the cluster at {c.start} leave a gap")
+        merlons = [f for f in c.frame if f.part[0] == "merlons"]
+        check(len(merlons) == (start.part[1] == "walled" and L.merlon_count(c.advance) > 0),
+              f"{name}: merlons at {c.start}")
+        inks = [L.ink_box(g, signs) for g in c.glyphs]
+        check(all(-2 <= ink[1] and ink[3] <= L.ENCLOSED_TOP + 2 for ink in inks),
+              f"{name}: the ink of the cluster at {c.start} leaves the inside of the ring")
+        check(all(g.level is not None and (c.stacked or g.codepoint not in signs) for g in c.glyphs),
+              f"{name}: a lone sign inside an enclosure")
+    return formed
+
+
+def test_enclosures(signs):
+    check(L.band_edges("plain") == (-106, -86, -53, -34, 1080, 1099, 1132, 1152)
+          and L.band_edges("walled") == (-123, -100, -58, -34, 1080, 1105, 1147, 1171)
+          and L.merlon_size() == (105, 42, 63), "the ring changed")
+    rings = L.default_rings()
+    check([rings[c].advance for c in (V11A, O6A, O36A, O36C)] == [617, 617, 881, 640]
+          and all(r.bands[3] * r.scale + r.dy == L.INNER[0] for r in rings.values()), "the delimiters changed")
+    for text, expected in ENCLOSURE_GOLDEN:
+        got = [(c.start, c.end, c.advance, [tuple(g) for g in c.glyphs], [tuple(f) for f in c.frame])
+               for c in L.layout(text, signs)]
+        check(got == expected, f"{label(text)}:\n  got      {got}\n  expected {expected}")
+        check(check_enclosed(text, signs), f"{label(text)}: no enclosure")
+    for text in ENCLOSURE_UNFORMED:
+        clusters = L.layout(text, signs)
+        check(not any(c.frame for c in clusters), f"{label(text)}: an enclosure formed")
+        check(all(c.glyphs == (L.Glyph(text[c.start], 0, 0, 0, 1.0),) for c in clusters if text[c.start] in L.ENCLOSURE),
+              f"{label(text)}: a control is not its box")
+        check_enclosed(text, signs)
+    # nested: the inner pair forms, the outer one does not
+    nested = [V11A, BEGIN, N5, BEGIN_W, AA1, END_W, G43, END_ENC, V11B]
+    frames = [f.part[1] for c in L.layout(nested, signs) for f in c.frame if f.part[0] == "line"]
+    check(frames == ["walled", "walled"], f"nested: {frames}")
+    # rule E2: no group and no word reaches across an enclosure control or a delimiter
+    for text in ([X1, V, BEGIN, N35, END_ENC], [V11A, V, BEGIN, X1, END_ENC], [BEGIN, X1, END_ENC, H, V11B]):
+        check(not any(c.stacked and len(c.glyphs) > 1 for c in L.layout(text, signs)), f"{label(text)}: joined across")
+    table = L.automatic_table()
+    word = [c for c in next(iter(sorted(table, key=str))) if c not in (L.START, L.END)]
+    inside = L.layout([V11A, BEGIN, *word, END_ENC, V11B], signs, table)
+    alone = L.layout(word, signs, table)
+    check([len(c.glyphs) for c in inside[1:-1]] == [len(c.glyphs) for c in alone],
+          f"a word of the table is stacked differently inside a cartouche")
+    # a group inside is the group outside; a lone sign is a group of one
+    for text in ([X1, V, N35], [R4, V, X1, H, Q3], [A1]):
+        inside = L.layout([BEGIN, *text, END_ENC], signs)[1]
+        outside = L.layout(text, signs)[0] if len(text) > 1 else L._stacked(0, 1, ((A1,),), 0, signs)
+        check(inside.glyphs == outside.glyphs and inside.advance == outside.advance, f"{label(text)} inside")
+    rng = random.Random(41)
+    codepoints = sorted(signs)
+    formed = sum(check_enclosed(enclosure_text(rng, codepoints), signs, table if n % 2 else None)
+                 for n in range(800))
+    check(formed > 300, f"only {formed} random texts formed an enclosure")
+    print(f"  enclosures: {len(ENCLOSURE_GOLDEN)} golden, {len(ENCLOSURE_UNFORMED)} unformed, 800 random texts "
+          f"({formed} with an enclosure)")
+
+
 def main():
     signs = L.sign_table(SOURCE)
     tests = (test_constants, test_signs, test_grammar, test_golden, test_golden_notices_constants,
              test_owner_rules, test_rounding, test_insertion, test_malformed, test_random,
-             test_automatic)
+             test_automatic, test_enclosures)
     for test in tests:
         try:
             test(signs)

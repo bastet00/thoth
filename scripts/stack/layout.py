@@ -55,6 +55,8 @@ The rules, each stated once:
     controls of a table of known sign sequences were there, and two
     half-block signs in a row (low and wide) stack one above the other
     (section 7, rules A1 to A9). Explicit controls always win.
+12. A begin and an end enclosure control draw a ring or a wall around the
+    groups between them, at full size (section 8, rules E1 to E7).
 
 Rounding. The font can only add whole numbers that its glyphs carry, so
 every position here is such a sum, rounded as the font rounds it: a unit
@@ -312,7 +314,8 @@ Glyph = namedtuple("Glyph", "codepoint x y level scale")
 
 # A stretch of the text, codepoints[start:end], that advances as one:
 # a group (stacked is True), a lone sign or a control.
-Cluster = namedtuple("Cluster", "start end advance glyphs stacked")
+Cluster = namedtuple("Cluster", "start end advance glyphs stacked frame", defaults=((),))
+# frame: the lines and end pieces an enclosure draws for the cluster (section 8)
 
 
 def measure(group, signs):
@@ -348,6 +351,8 @@ def layout(codepoints, signs, table=None):
     automatic_table()), or None for the font with the automatic layer
     switched off.
     """
+    if any(codepoint in ENCLOSURE for codepoint in codepoints):  # section 8
+        return _with_enclosures(codepoints, signs, table)
     if table is not None:
         text, origin = automatic(codepoints, table, signs)
         return [cluster._replace(start=origin[cluster.start], end=origin[cluster.end - 1] + 1)
@@ -1047,3 +1052,322 @@ def automatic(codepoints, table, signs=None):
             text.append(control)
             origin.append(i)
     return text, origin
+
+
+# --- 8. Enclosures ----------------------------------------------------------
+#
+# The controls U+1343C..1343F draw a cartouche, a ḥwt or a walled
+# enclosure around a stretch of groups: "the combination creates a
+# full-form enclosing cartouche with horizontal lines above and below"
+# (Unicode core specification, chapter 11, "Egyptian Hieroglyph Format
+# Controls", figure 11-4). The syntax is that of L2/21-248, table 3 and
+# section 3:
+#
+#     enclosure       ::= [ opening ] inner_enclosure [ closing ]
+#     inner_enclosure ::= BEGIN group* END | BEGIN_WALLED group* END_WALLED
+#
+# with "the tokenizer ... required to analyze an opening delimiter
+# immediately preceding [BEGIN] to open an enclosure, and a closing
+# delimiter immediately following [END] to close it"; either delimiter may
+# be missing (damaged text), and the begin and end controls "must be used
+# in pairs". The delimiters are the signs of L2/21-248 table 13: cartouche
+# V11A, V11D / V11B, V11C; ḥwt O6A-O6C / O6D-O6F; walls O36A, O36C / O36B,
+# O36D (the serekh end O33A is left out: it has no band to join). The
+# proposal does not expect nested enclosures to be implemented (section 3,
+# "middle insertion versus pairs of delimiters"), and neither are they
+# here; nor is an enclosure a member of a joiner group.
+#
+# The rules, each stated once:
+#
+# E1. An enclosure is BEGIN, one or more characters that are signs, other
+#     controls (any group, well formed or not) or nonspacing marks of other
+#     scripts, and the END of the same pair; with the opening delimiter
+#     right before BEGIN and the closing delimiter right after END, if
+#     they are there. Nothing else forms one: an empty pair, a space, a
+#     ZWJ or ZWNJ, another enclosure control or a delimiter inside, a
+#     pair of the other kind (rule E5 adds one more).
+# E2. Every enclosure control, and a delimiter right before a begin
+#     control or right after an end control, separates the text on its two
+#     sides as a space does, whether or not an enclosure forms: no group
+#     (rule 9) and no word (rules A1, A2) reaches across it.
+# E3. A control that is no part of an enclosure is its fallback box, a
+#     delimiter that is no part of one a lone sign (rules 1 and 9).
+# E4. Inside, the text between the controls is laid out by rules 1 to 11
+#     as a text of its own, and then: a lone sign is drawn as a group of
+#     one sign at level 0 (rules 6 to 8), so it stands in the quadrat
+#     instead of where the source puts it; an insertion block (rule I1) is
+#     moved up or down as a whole, so that its base stands where that sign
+#     stands as a group of one; groups and boxes stay as they are. All ink
+#     is then between the baseline and ENCLOSED_TOP, at full size.
+# E5. An enclosure that holds an insertion block taller than that, with
+#     any sign in any corner of its base (ENCLOSABLE), is not formed (E3).
+# E6. The ring keeps GAP from the quadrat: the inner edges of its bands
+#     are at INNER. Each delimiter is drawn scaled by its own factor and
+#     moved so that the inner edges of its bands land there; its advance
+#     is scaled with it. Under every cluster inside, the bands of the
+#     profile piece of the kind (PROFILE) run from its start to its
+#     advance W: two pieces of SEGMENTS long M, the largest that is at
+#     most W, one from the start and one to the end (they overlap where M
+#     is more than half of W). A walled enclosure also has W // period
+#     merlons on each band, centred on the cluster. A cluster with no
+#     advance draws no lines.
+# E7. Clusters: the opening delimiter and BEGIN are one cluster, END and
+#     the closing delimiter another; a control without its delimiter is a
+#     cluster with no advance; the groups inside keep their clusters.
+#
+# Why these choices.
+# - Content at full size (factor 1, owner rule O3): only the ring is fitted.
+#   Noto's cartouche pieces are 1,227 high, their inside 1,087, against
+#   1,080 + 34 for a quadrat and its gap: a ring 2.5 % larger than the lone
+#   cartouche holds every group with GAP to spare. Shrinking the content
+#   instead would need levels the font does not have (one consistent
+#   factor on top of seven levels) or a second copy of every glyph.
+# - Lone signs as groups of one: the source draws them from 326 below the
+#   baseline to 1,324 above it; inside a ring they must stand in the
+#   quadrat like the members of a group, and that layout already exists.
+# - Lines per cluster: the font cannot stretch a glyph, but every cluster
+#   knows its advance, so two overlapping pieces of six lengths cover
+#   any width without a glyph per length.
+
+BEGIN_ENCLOSURE, END_ENCLOSURE, BEGIN_WALLED, END_WALLED = 0x1343C, 0x1343D, 0x1343E, 0x1343F
+ENCLOSURE = {  # control: (kind, begins)
+    BEGIN_ENCLOSURE: ("plain", True), END_ENCLOSURE: ("plain", False),
+    BEGIN_WALLED: ("walled", True), END_WALLED: ("walled", False),
+}
+OPENINGS = (0x13258, 0x13259, 0x1325A, 0x13286, 0x13288, 0x13379, 0x1342F)  # O6A-C, O36A, O36C, V11A, V11D
+CLOSINGS = (0x1325B, 0x1325C, 0x1325D, 0x13287, 0x13289, 0x1337A, 0x1337B)  # O6D-F, O36B, O36D, V11B, V11C
+PROFILE = {"plain": 0x13379, "walled": 0x13288}  # the piece whose bands the lines continue
+ENCLOSED_TOP = HEIGHT_LIMIT * UNIT - GAP  # 1046: content ink is between 0 and this
+INNER = (-GAP, ENCLOSED_TOP + GAP)  # the inner edges of the bands: -34 and 1080
+SEGMENTS = (64, 128, 256, 512, 1024, 2048)  # line lengths; any advance up to 4096 is two of one
+MERLON = (85, 34, 51)  # width, gap, height of a merlon on the top of O36C, as the source draws it
+OPEN_END = 25  # how far in from the open end of a delimiter its bands are measured
+
+# A drawn part of an enclosure, x and y from the start of its cluster:
+# ("piece", code point) a delimiter joined to the lines (its outline moved
+# and scaled, as Ring says), ("line", kind, length, "start" or "end") a
+# piece of the lines (from x on, or up to x), ("merlons", kind, count)
+# centred on x.
+Frame = namedtuple("Frame", "part x y")
+# scale, dy: the delimiter's outline is scaled by scale about (0, 0) and
+# moved up by dy; advance: its advance then; bands: the eight edges of its
+# two bands at the open end, bottom to top, as the source draws them;
+# opening: whether it opens.
+Ring = namedtuple("Ring", "scale dy advance bands opening")
+
+
+class _Crossings(BasePen):
+    """Where an outline crosses the vertical line x = at."""
+
+    def __init__(self, at):
+        super().__init__(None)
+        self.at, self.found, self.point, self.start = at, [], None, None
+
+    def _moveTo(self, point):
+        self.point = self.start = point
+
+    def _lineTo(self, point):
+        (x0, y0), (x1, y1) = self.point, point
+        if (x0 <= self.at < x1) or (x1 <= self.at < x0):
+            self.found.append(y0 + (y1 - y0) * (self.at - x0) / (x1 - x0))
+        self.point = point
+
+    def _curveToOne(self, a, b, c):
+        p = self.point
+        for i in range(1, 33):
+            t, u = i / 32, 1 - i / 32
+            self._lineTo(tuple(u ** 3 * p[n] + 3 * u * u * t * a[n] + 3 * u * t * t * b[n] + t ** 3 * c[n]
+                               for n in (0, 1)))
+
+    def _qCurveToOne(self, a, b):
+        p = self.point
+        for i in range(1, 17):
+            t, u = i / 16, 1 - i / 16
+            self._lineTo(tuple(u * u * p[n] + 2 * u * t * a[n] + t * t * b[n] for n in (0, 1)))
+
+    def _closePath(self):
+        if self.point != self.start:
+            self._lineTo(self.start)
+
+
+def ring_table(font, signs):
+    """{delimiter: Ring} (rule E6), measured on the source outlines: the
+    eight crossings of a vertical line OPEN_END in from the open end."""
+    table = {}
+    for codepoint in (*OPENINGS, *CLOSINGS):
+        sign, opening = signs[codepoint], codepoint in OPENINGS
+        pen = _Crossings(sign.box[2] - OPEN_END if opening else sign.box[0] + OPEN_END)
+        font[sign.name].draw(pen)
+        bands = tuple(round(y) for y in sorted(pen.found))
+        if len(bands) != 8:
+            raise ValueError(f"{sign.name}: {len(bands)} band edges at the open end, expected 8")
+        scale = (INNER[1] - INNER[0]) / (bands[4] - bands[3])
+        table[codepoint] = Ring(scale, INNER[0] - scale * bands[3], _round(sign.advance * scale), bands, opening)
+    return table
+
+
+_rings = []
+
+
+def default_rings():
+    """The ring table of the source font, read once."""
+    if not _rings:
+        import ufoLib2
+        _rings.append(ring_table(ufoLib2.Font.open(SOURCE), default_signs()))
+    return _rings[0]
+
+
+def band_edges(kind, rings=None):
+    """The eight edges of the bands of the lines of a kind, in font units."""
+    ring = (rings or default_rings())[PROFILE[kind]]
+    return tuple(_round(ring.scale * y + ring.dy) for y in ring.bands)
+
+
+def merlon_size(rings=None):
+    """(width, gap, height) of the merlons of a walled line: the source's,
+    scaled as the walled profile piece is."""
+    scale = (rings or default_rings())[PROFILE["walled"]].scale
+    return tuple(_round(size * scale) for size in MERLON)
+
+
+def segment(width):
+    """Rule E6: the length of the two line pieces under a cluster, or None."""
+    fitting = [length for length in SEGMENTS if length <= width]
+    return fitting[-1] if fitting else None
+
+
+def merlon_count(width, rings=None):
+    merlon, gap, _ = merlon_size(rings)
+    return width // (merlon + gap)
+
+
+def lift_in_enclosure(sign):
+    """Rule E4: how far a lone sign's ink moves to stand as a group of one."""
+    return span(1, sign.cell[1], UNIT)[1] - (sign.box[1] + sign.lift)
+
+
+_enclosable = {}
+
+
+def enclosable(signs):
+    """Rule E5: {(base, level): True if every insertion block on that base
+    drawn at that level fits under ENCLOSED_TOP once moved (rule E4)}."""
+    key = id(signs)
+    if key not in _enclosable:
+        found = {}
+        for base in sorted(signs):
+            for control in CORNERS:
+                for inserted in signs:
+                    if not insertable(signs[inserted]):
+                        continue
+                    placed = insertion(base, control, inserted, signs)
+                    if placed is None:
+                        continue
+                    cluster = _inserted(0, 3, [base, control, inserted], signs)
+                    top = max(ink_box(glyph, signs)[3] for glyph in cluster.glyphs)
+                    fits = top + lift_in_enclosure(signs[base]) <= ENCLOSED_TOP
+                    found[(base, placed[0])] = found.get((base, placed[0]), True) and fits
+        _enclosable[key] = (signs, found)
+    return _enclosable[key][1]
+
+
+def delimiters(codepoints):
+    """Rule E2: the indices of the delimiters next to an enclosure control."""
+    found = set()
+    for index, codepoint in enumerate(codepoints):
+        if codepoint not in ENCLOSURE:
+            continue
+        if ENCLOSURE[codepoint][1] and index and codepoints[index - 1] in OPENINGS:
+            found.add(index - 1)
+        if not ENCLOSURE[codepoint][1] and index + 1 < len(codepoints) and codepoints[index + 1] in CLOSINGS:
+            found.add(index + 1)
+    return found
+
+
+def _content(codepoint):
+    """Rule E1: a character that may stand between the two controls."""
+    return (is_sign(codepoint) or (codepoint in CONTROLS and codepoint not in ENCLOSURE)
+            or (not 0x13000 <= codepoint <= 0x1345F and unicodedata.category(chr(codepoint))[0] == "M"))
+
+
+def enclosures(codepoints):
+    """Rule E1: [(begin, end, kind)] of the pairs that enclose something;
+    rule E5 is checked later, on the layout of what they enclose."""
+    found = []
+    for begin, codepoint in enumerate(codepoints):
+        if codepoint not in ENCLOSURE or not ENCLOSURE[codepoint][1]:
+            continue
+        end = begin + 1
+        while end < len(codepoints) and _content(codepoints[end]):
+            end += 1
+        kind = ENCLOSURE[codepoint][0]
+        if end > begin + 1 and end < len(codepoints) and ENCLOSURE.get(codepoints[end]) == (kind, False):
+            found.append((begin, end, kind))
+    return found
+
+
+def _with_enclosures(codepoints, signs, table):
+    """Rules E1 to E7: lay out text that has enclosure controls."""
+    cuts = sorted({i for i, c in enumerate(codepoints) if c in ENCLOSURE} | delimiters(codepoints))
+    clusters, start = [], 0
+    for cut in [*cuts, len(codepoints)]:  # rule E2: each part on its own
+        clusters += [c._replace(start=c.start + start, end=c.end + start)
+                     for c in layout(codepoints[start:cut], signs, table)]
+        if cut < len(codepoints):
+            clusters.append(_unstacked(cut, codepoints[cut], signs))  # rule E3, unless formed
+        start = cut + 1
+    for begin, end, kind in enclosures(codepoints):
+        inside = _enclosed(codepoints[begin + 1:end], begin + 1, kind, signs, table)
+        if inside is None:  # rule E5
+            continue
+        opening = begin - 1 if begin and codepoints[begin - 1] in OPENINGS else None
+        closing = end + 1 if end + 1 < len(codepoints) and codepoints[end + 1] in CLOSINGS else None
+        first = begin if opening is None else opening
+        last = end if closing is None else closing
+        ends = [_piece(opening, begin, codepoints), _piece(closing, end, codepoints)]
+        clusters = ([c for c in clusters if c.end <= first] + [ends[0], *inside, ends[1]]
+                    + [c for c in clusters if c.start > last])
+    return clusters
+
+
+def _piece(delimiter, control, codepoints):
+    """Rule E7: the cluster of a control and its delimiter, if any."""
+    if delimiter is None:
+        return Cluster(control, control + 1, 0, (), False)
+    ring = default_rings()[codepoints[delimiter]]
+    first, last = sorted((delimiter, control))
+    return Cluster(first, last + 1, ring.advance, (), False, (Frame(("piece", codepoints[delimiter]), 0, 0),))
+
+
+def _enclosed(content, offset, kind, signs, table):
+    """Rule E4 to E6: the clusters of what an enclosure holds, or None."""
+    text, origin = automatic(content, table, signs) if table is not None else (content, range(len(content)))
+    found = []
+    for cluster in layout(text, signs):
+        run = text[cluster.start:cluster.end]
+        start, end = origin[cluster.start] + offset, origin[cluster.end - 1] + 1 + offset
+        if not cluster.stacked and cluster.glyphs[0].codepoint in signs:  # a lone sign
+            cluster = _stacked(start, end, ((cluster.glyphs[0].codepoint,),), 0, signs)
+        elif cluster.stacked and is_insertion(run) and insertion(*run, signs) is not None:
+            base = cluster.glyphs[0]
+            if not enclosable(signs)[(base.codepoint, base.level)]:
+                return None
+            move = lift_in_enclosure(signs[base.codepoint])
+            cluster = cluster._replace(start=start, end=end,
+                                       glyphs=tuple(g._replace(y=g.y + move) for g in cluster.glyphs))
+        else:
+            cluster = cluster._replace(start=start, end=end)
+        found.append(cluster._replace(frame=lines(kind, cluster.advance)))
+    return found
+
+
+def lines(kind, width):
+    """Rule E6: the frame parts under a cluster `width` wide."""
+    length = segment(width)
+    if length is None:
+        return ()
+    parts = [Frame(("line", kind, length, "start"), 0, 0), Frame(("line", kind, length, "end"), width, 0)]
+    count = merlon_count(width) if kind == "walled" else 0
+    if count:
+        parts.append(Frame(("merlons", kind, count), width // 2, 0))
+    return tuple(parts)

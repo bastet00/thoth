@@ -14,7 +14,8 @@ import ufoLib2
 
 import layout
 from features import add_features
-from glyphs import Automatic, Names, add_automatic, add_controls, add_insertion, add_stacking, lift_signs
+from glyphs import (Automatic, Enclosures, Names, add_automatic, add_controls, add_enclosures, add_insertion,
+                    add_stacking, lift_signs)
 
 # A designspace with one source, because gftools builder can only add the
 # transliteration letters (includeSubsets in config.yaml) to a designspace.
@@ -42,9 +43,11 @@ def main(source, build_dir):
     source, build_dir = Path(source), Path(build_dir)
     font = ufoLib2.Font.open(source)
     names = Names(layout.sign_table(font), font)  # measured on the source outlines
+    names.enclosures = Enclosures(names.signs, layout.ring_table(font, names.signs))
+    enclosures = add_enclosures(font, names.enclosures)  # drawn from the outlines before the lift
     lift_signs(font, names.signs)
     order = (font.lib["public.glyphOrder"] + add_controls(font) + add_stacking(font, names)
-             + add_insertion(font, names))
+             + add_insertion(font, names) + enclosures)
     font.lib["public.glyphOrder"] = order
     table = layout.automatic_table()
     problems = layout.check_table(table, names.signs)

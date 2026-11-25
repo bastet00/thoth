@@ -614,8 +614,11 @@ def categories(font, names, automatic):
 def add_features(font, names, automatic):
     w = Writer()
     w.text += [f"languagesystem {script} {language};" for script, language in SYSTEMS]
+    enclosure = _gsub_enclosure_start(names, w)  # first of all, in calt and rlig (layout rule E2)
     auto = _gsub_auto(names, w, automatic)  # first in the lookup list
     _gsub(names, w)
+    _gsub_enclosure_end(names, w)
+    shift = _gpos_enclosure_first(names, w)  # first in the GPOS lookup list
     _gpos(names, w)
 
     def feature(tag, lookups, automatic=False):
@@ -628,9 +631,208 @@ def add_features(font, names, automatic):
         return [f"feature {tag} {{", *body, f"}} {tag};"]
 
     inserts = _gpos_insert(names, w)
-    w.text += feature("calt", auto)
-    w.text += feature("rlig", w.gsub)
-    w.text += feature("mark", w.gpos[:1] + inserts[:1], automatic=True)
+    enclosed = _gpos_enclosure(names, w)
+    w.text += feature("calt", enclosure + auto)
+    w.text += feature("rlig", enclosure + w.gsub)
+    w.text += feature("mark", shift + w.gpos[:1] + inserts[:1] + enclosed, automatic=True)
     w.text += feature("mkmk", w.gpos[1:] + inserts[1:], automatic=True)
     font.lib["public.openTypeCategories"] = categories(font, names, automatic)
+    e = names.enclosures  # enclosures (layout section 8)
+    font.lib["public.openTypeCategories"].update(
+        {**{name: "base" for name in e.bases() + e.empty_bases()}, **{name: "mark" for name in e.marks()}})
     font.features.text = "\n".join(w.text) + "\n"
+
+
+# --- Enclosures (layout section 8) --------------------------------------------
+
+def _enclosure_content(n):
+    """The bases a cluster can start with once the stacking lookups are
+    done: lone signs, group heads, shrunk birds and control boxes."""
+    found = [n.lone(c) for c in sorted(n.signs)] + [n.inserts.shrunk(c, k) for c, k in n.inserts.shrunk_glyphs]
+    found += [n.head(width, level) for width, level in n.head_sizes] + [n.fallback_head]
+    return found + [control_name(c) for c in CONTROLS if c not in L.ENCLOSURE]
+
+
+def _enclosure_bases(n):
+    """{glyph: (advance, lift)} of the bases of the clusters inside an
+    enclosure once rule E4 has been applied: groups, boxes, the spacers of
+    lone signs and the bases of insertions; lift: how far rule E4 moves it."""
+    e = n.enclosures
+    found = {n.head(width, level): (L.advance(width, L.half_unit(level)), 0) for width, level in n.head_sizes}
+    found.update({control_name(c): (L.CONTROL_ADVANCE, 0) for c in CONTROLS if c not in L.ENCLOSURE})
+    found.update({e.spacer(cell): (L.advance(cell[0], L.half_unit(0)), 0) for cell in e.cells})
+    for (base, level), fits in e.enclosable.items():
+        if fits:
+            glyph = n.lone(base) if not level else n.inserts.shrunk(base, level)
+            found[glyph] = (n.signs[base].advance, e.moved.get(glyph, (0,))[0])
+    return found
+
+
+def _gsub_enclosure_start(n, w):
+    """Rule E2, first of all lookups, in calt and rlig: every enclosure
+    control becomes its pending copy, and so does a delimiter right before
+    a begin control or right after an end control; the stacking and the
+    automatic layer take them for other text. The rules name the default
+    ignorables, which HarfBuzz would otherwise skip in context."""
+    e = n.enclosures
+    ign = w.define("E_IGNORABLE", n.ignorables)
+    w.lookup("enc_pending", [f"sub {control_name(c)} by {e.pending(c)}" for c in L.ENCLOSURE])
+    begins = cls(e.pending(c) for c, (_, begins) in L.ENCLOSURE.items() if begins)
+    ends = cls(e.pending(c) for c, (_, begins) in L.ENCLOSURE.items() if not begins)
+    w.lookup("enc_wait", [f"sub {n.lone(c)} by {e.waiting(c)}" for c in (*L.OPENINGS, *L.CLOSINGS)])
+    openings, closings = cls(n.lone(c) for c in L.OPENINGS), cls(n.lone(c) for c in L.CLOSINGS)
+    w.lookup("enc_delimiters", [
+        f"ignore sub {openings}' {ign} {begins}", f"sub {openings}' lookup enc_wait {begins}",
+        f"ignore sub {ends} {ign} {closings}'", f"sub {ends} {closings}' lookup enc_wait",
+    ])
+    return ["enc_pending", "enc_delimiters"]
+
+
+def _lookup_flagged(w, name, flag, rules, table=None):
+    """A lookup with any lookup flag (Writer.lookup has mark filtering only)."""
+    w.text += [f"lookup {name} {{", f"    lookupflag {flag};", *(f"    {r};" for r in rules), f"}} {name};"]
+    if table:
+        getattr(w, table).append(name)
+
+
+def _gsub_enclosure_end(n, w):
+    """Rules E1 and E3 to E7, after every stacking lookup, when each
+    cluster is a base (lone sign, head, bird, box) and its marks.
+
+     1. begin    a begin control gets a mark of its kind.
+     2. inside   left to right, over the bases and the enclosure marks: the
+                 base right after a begin mark or after a base that has
+                 the inside mark gets the inside mark, unless an ignorable
+                 is before it or it is the base of an insertion too tall
+                 for an enclosure (rule E5); an end control right after an
+                 inside mark gets an end mark of its kind. Other text, an
+                 ignorable, a mark of other text or another enclosure
+                 control stops the chain.
+     3. kind     over the marks alone: inside marks after a begin mark of a
+                 kind take that kind; an end mark after an inside mark of
+                 its kind is good.
+     4. back     right to left over the marks alone: an inside mark before
+                 a good one, and then the begin mark, are good: the
+                 enclosure forms.
+     5. ends     a delimiter, its control and the good mark become the
+                 joined delimiter (a ligature: one cluster); a control and
+                 a good mark alone become an empty base; whatever is still
+                 pending goes back to the control's box or the lone sign.
+     6. inside   a lone sign with a good mark becomes a spacer and its
+                 level-0 variant (a group of one); every base with a good
+                 mark gets the line pieces and merlons of its advance.
+    """
+    e, i = n.enclosures, n.inserts
+    content_cls = w.define("E_CONTENT", _enclosure_content(n))
+    ign = w.define("E_IGN", n.ignorables)
+    begin_marks = {k: e.state("b", k) for k in e.kinds}
+    end_marks = {k: e.state("e", k) for k in e.kinds}
+    corner = w.define("E_CORNER", i.corner_marks())
+    tall = sorted({n.lone(b) if not k else i.shrunk(b, k) for (b, k), fits in e.enclosable.items() if not fits})
+    tall_cls = w.define("E_TALL", tall)
+    pend = {c: e.pending(c) for c in L.ENCLOSURE}
+
+    # 1. begin
+    w.lookup("enc_begin", [f"sub {pend[c]} by {pend[c]} {begin_marks[k]}"
+                           for c, (k, begins) in L.ENCLOSURE.items() if begins], table="gsub")
+    # 2. inside
+    w.lookup("enc_add_in", [f"sub {g} by {g} {e.inside}" for g in _enclosure_content(n)])
+    w.lookup("enc_add_end", [f"sub {pend[c]} by {pend[c]} {end_marks[k]}"
+                             for c, (k, begins) in L.ENCLOSURE.items() if not begins])
+    chain = w.define("E_CHAIN", [*begin_marks.values(), e.inside, *i.corner_marks()])
+    after = cls([*begin_marks.values(), e.inside])
+    ends = cls(pend[c] for c, (_, begins) in L.ENCLOSURE.items() if not begins)
+    rules = [
+        f"ignore sub {ign} {content_cls}'", f"ignore sub {after} {tall_cls}' {corner}",
+        f"ignore sub {e.inside} {corner} {tall_cls}' {corner}",
+        f"sub {after} {content_cls}' lookup enc_add_in", f"sub {e.inside} {corner} {content_cls}' lookup enc_add_in",
+        f"ignore sub {ign} {ends}'",
+        f"sub {e.inside} {ends}' lookup enc_add_end", f"sub {e.inside} {corner} {ends}' lookup enc_add_end",
+    ]
+    w.lookup("enc_inside", rules, chain, "gsub")
+    # 3. kind
+    states = w.define("E_STATES", e.states())
+    rules = []
+    for k in e.kinds:
+        w.lookup(f"enc_to_{k}", [f"sub {e.inside} by {e.state('in', k)}"])
+        w.lookup(f"enc_end_{k}", [f"sub {end_marks[k]} by {e.state('eok', k)}"])
+        rules += [f"sub [{begin_marks[k]} {e.state('in', k)}] {e.inside}' lookup enc_to_{k}",
+                  f"sub {e.state('in', k)} {end_marks[k]}' lookup enc_end_{k}"]
+    _lookup_flagged(w, "enc_kind", "IgnoreBaseGlyphs UseMarkFilteringSet @E_STATES", rules, "gsub")
+    # 4. back
+    rules = []
+    for k in e.kinds:
+        good = cls([e.state("ok", k), e.state("eok", k)])
+        rules += [f"rsub {e.state('in', k)}' {good} by {e.state('ok', k)}",
+                  f"rsub {begin_marks[k]}' {good} by {e.state('bok', k)}"]
+    _lookup_flagged(w, "enc_back", "IgnoreBaseGlyphs UseMarkFilteringSet @E_STATES", rules, "gsub")
+    # 5. ends
+    rules = []
+    for c, (k, begins) in L.ENCLOSURE.items():
+        if begins:
+            rules += [f"sub {e.waiting(d)} {pend[c]} {e.state('bok', k)} by {e.joined(d)}" for d in L.OPENINGS]
+            rules.append(f"sub {pend[c]} {e.state('bok', k)} by {e.start}")
+        else:
+            rules += [f"sub {pend[c]} {e.state('eok', k)} {e.waiting(d)} by {e.joined(d)}" for d in L.CLOSINGS]
+            rules.append(f"sub {pend[c]} {e.state('eok', k)} by {e.end}")
+    w.lookup("enc_ends", rules, table="gsub")
+    w.lookup("enc_unformed_marked", [f"sub {pend[c]} {(begin_marks if begins else end_marks)[k]} by {control_name(c)}"
+                                     for c, (k, begins) in L.ENCLOSURE.items()], table="gsub")
+    w.lookup("enc_unformed", [f"sub {pend[c]} by {control_name(c)}" for c in L.ENCLOSURE]
+             + [f"sub {e.waiting(d)} by {n.lone(d)}" for d in (*L.OPENINGS, *L.CLOSINGS)], table="gsub")
+    # 6. inside
+    good = cls(e.state("ok", k) for k in e.kinds)
+    w.lookup("enc_cell", [f"sub {n.lone(c)} by {e.spacer(s.cell)} {n.variant(c, 0)}" for c, s in sorted(n.signs.items())])
+    w.lookup("enc_lone", [f"ignore sub {cls(n.lone(c) for c in n.signs)}' {good} {corner}",
+                          f"sub {cls(n.lone(c) for c in n.signs)}' lookup enc_cell {good}"], table="gsub")
+    rules, classes = [], defaultdict(list)
+    for glyph, (width, _) in _enclosure_bases(n).items():
+        length = L.segment(width)
+        if length is None:
+            continue
+        for k in e.kinds:
+            count = L.merlon_count(width, e.rings) if k == "walled" else 0
+            classes[(k, length, count)].append(glyph)
+    for (k, length, count), bases in sorted(classes.items()):
+        name = f"enc_line_{k}_{length}_{count}"
+        parts = [e.line(k, length, "start"), e.line(k, length, "end")] + [e.merlons(k, count)] * bool(count)
+        w.lookup(name, [f"sub {e.state('ok', k)} by {e.state('ok', k)} {' '.join(parts)}"])
+        rules.append(f"sub {cls(sorted(bases))} {e.state('ok', k)}' lookup {name}")
+    w.lookup("enc_lines", rules, w.define("E_GOOD", [e.state("ok", k) for k in e.kinds]), "gsub")
+
+
+def _gpos_enclosure_first(n, w):
+    """Rule E4, first of the GPOS lookups: the base of an insertion inside
+    an enclosure moves up (or down) by its lift, before anything hangs
+    from it. Placed first, the marks of the block follow it in every
+    engine tried; placed after the mark attachment, HarfBuzz 12.3.2 moves
+    the marks with it and HarfBuzz 15.0 does not."""
+    e = n.enclosures
+    good = cls(e.state("ok", k) for k in e.kinds)
+    w.lookup("enc_move", [f"pos {g} <0 {move} 0 0>" for g, (move, *_) in sorted(e.moved.items())])
+    w.lookup("enc_shift", [f"pos {cls(sorted(e.moved))}' lookup enc_move {good}"])
+    return ["enc_shift"]
+
+
+def _gpos_enclosure(n, w):
+    """Rules E4 and E6: the variant of a lone sign hangs from its spacer at
+    the centre of the bottom of its cell; the line pieces hang from the
+    base of their cluster by its start, its end and its middle, less the
+    lift of a moved base, which they would otherwise follow. Returns the
+    lookups, for feature mark."""
+    e = n.enclosures
+    w.text.append(f"markClass {cls(n.variant(c, 0) for c in sorted(n.signs))} <anchor 0 0> @E_CELL;")
+    rules = [f"pos base {e.spacer(cell)} <anchor {L.centre(cell[0], L.half_unit(0))} "
+             f"{L.span(1, cell[1], L.UNIT)[1]}> mark @E_CELL" for cell in e.cells]
+    w.lookup("enc_place_cell", rules)
+    starts = [e.line(k, m, "start") for k in e.kinds for m in L.SEGMENTS]
+    ends = [e.line(k, m, "end") for k in e.kinds for m in L.SEGMENTS]
+    w.text += [f"markClass {cls(starts)} <anchor 0 0> @E_START;", f"markClass {cls(ends)} <anchor 0 0> @E_END;",
+               f"markClass {cls(e.merlon_rows())} <anchor 0 0> @E_MERLONS;"]
+    rules = []
+    for glyph, (width, lift) in sorted(_enclosure_bases(n).items()):
+        if L.segment(width) is not None:
+            rules.append(f"pos base {glyph} <anchor 0 {-lift}> mark @E_START <anchor {width} {-lift}> mark @E_END "
+                         f"<anchor {width // 2} {-lift}> mark @E_MERLONS")
+    w.lookup("enc_place_lines", rules)
+    return ["enc_place_cell", "enc_place_lines"]

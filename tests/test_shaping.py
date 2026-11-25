@@ -50,6 +50,7 @@ TABLE = L.automatic_table()  # the automatic layer (feature calt), on by default
 AUTOMATIC = glyphs.Automatic(TABLE)
 AUTOMATIC_MARKS = set(AUTOMATIC.markers())
 NAMES = glyphs.Names(SIGNS, SOURCE)
+ENCLOSURES = glyphs.Enclosures(SIGNS, L.ring_table(SOURCE, SIGNS))  # layout section 8
 V, H = L.VERTICAL_JOINER, L.HORIZONTAL_JOINER
 FALLBACK = "control.fallback"
 
@@ -58,7 +59,9 @@ FALLBACK = "control.fallback"
 # 436,216 bytes WOFF2; without the shape rule 12,602, 1,213,596 and 434,888;
 # without the layer 12,594, 1,184,664 and 427,992; without corner insertion
 # 12,398, 1,083,928 and 392,620) with a little room.
-MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 12_750, 1_230_000, 445_000
+# Enclosures (layout section 8) add 264 glyphs, 70,320 bytes TTF and 21,524
+# bytes WOFF2: 12,868 glyphs, 1,285,684 and 457,576.
+MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 12_950, 1_300_000, 465_000
 
 # Egyptological transliteration, beyond the basic Latin set.
 TRANSLITERATION = [
@@ -125,6 +128,13 @@ def group(rows):
     return text
 
 
+def enclosure_parts():
+    """Every layout.Frame part an enclosure can draw (layout section 8)."""
+    parts = [("piece", d) for d in (*L.OPENINGS, *L.CLOSINGS)]
+    parts += [("line", k, m, s) for k in ENCLOSURES.kinds for m in L.SEGMENTS for s in ("start", "end")]
+    return parts + [("merlons", "walled", n) for n in ENCLOSURES.counts]
+
+
 def label(codepoints):
     return " ".join(f"{c:04X}" for c in codepoints)
 
@@ -161,6 +171,9 @@ class Shaper:
         self.variants = {NAMES.variant(c, k): (c, k) for c in SIGNS for k in glyphs.LEVELS}
         self.boxes = {glyphs.control_name(c): c for c in glyphs.CONTROLS}
         self.shrunk = {NAMES.inserts.shrunk(c, k): (c, k) for c, k in NAMES.inserts.shrunk_glyphs}
+        # what an enclosure draws (layout.Frame parts) and its spacers, which carry an advance
+        self.frames = {ENCLOSURES.frame_name(part): part for part in enclosure_parts()}
+        self.spacers = {ENCLOSURES.spacer(cell) for cell in ENCLOSURES.cells}
 
     def shape(self, codepoints, level=hb.BufferClusterLevel.MONOTONE_CHARACTERS, tracking=0):
         """[(glyph, cluster, x, y, advance)], x from the start of the line;
@@ -224,8 +237,13 @@ class Shaper:
                     for i in mine if self.drawn(shaped[i][0])]
             for i in mine:
                 name, _, _, _, glyph_advance = shaped[i]
-                if not self.drawn(name) and not name.startswith("Q.") and glyph_advance:
+                if (not self.drawn(name) and not name.startswith("Q.") and glyph_advance
+                        and name not in self.frames and name not in self.spacers):
                     problems.append(f"{name} has an advance")
+            frame = sorted((self.frames[shaped[i][0]], shaped[i][2] - pen, shaped[i][3])
+                           for i in mine if shaped[i][0] in self.frames)
+            if frame != sorted(tuple(part) for part in c.frame):
+                problems.append(f"cluster at {c.start}: frame {frame}, reference {sorted(c.frame)}")
             if len(seen) != len(c.glyphs):
                 problems.append(f"cluster at {c.start}: {len(seen)} glyphs drawn, reference {len(c.glyphs)}")
                 continue
@@ -716,6 +734,135 @@ def test_automatic(shaper):
           f"{failed} failed; with calt off {off_count} texts, {off_failed} failed")
 
 
+# Enclosures (layout section 8). Text in the little MdC of encode(), with
+# the controls written as code points: B and E for the cartouche pair,
+# BW and EW for the walled pair.
+B, E, BW, EW = "<1343C>", "<1343D>", "<1343E>", "<1343F>"
+ROYAL_NAMES = [  # flat and stacked spellings, in cartouches
+    f"V11A{B}Aa1-G43-I9-G43{E}V11B",  # Khufu
+    f"V11A{B}Aa1:I9-G43-I9-G43{E}V11B",  # Khufu, stacked
+    f"V11A{B}N5-M17-Y5:N35-N28:Z2{E}V11B",  # Tutankhamun's throne name, flat
+    f"V11A{B}M17-Y5:N35-X1:Z4-S34-S29{E}V11B",  # Tutankhamun, stacked
+    f"V11A{B}N5-F12-Z1{E}V11B",  # Neferkare-style short name with r
+    f"V11A{B}R4:X1*Q3-I9-N35:Z2{E}V11B",  # with ḥtp inside
+    f"V11A{B}N5:C12-M17-Y5:N35{E}V11C",  # with a seated god
+    f"V11D{B}M23-X1:N35{E}V11B",  # the knotted opening
+    f"V11A{B}G39-N5{E}V11B", f"V11A{B}D21:N35-D21:N35-D21:N35-D21:N35-D21:N35-D21:N35-D21:N35{E}V11B",
+    f"V11A{B}G14<13434>X1-B1{E}V11B",  # an insertion inside: the vulture with t in its corner
+    f"V11A{B}N5-Z1-C1{E}V11B", f"V11A{B}S29-D21:N35-N35:Aa1{E}V11B",
+]
+WALLS = [  # the ḥwt and the walled enclosure around one to four groups
+    f"O6A{B}R4:X1*Q3{E}O6D", f"O6B{B}A40-N35{E}O6E", f"O6C{B}G43-D21:N35-A1{E}O6F",
+    f"O6A{B}X1:N35-M17-D21-A1{E}O6F",
+    f"O36C{BW}M17{EW}O36D", f"O36C{BW}D21:N35-Aa1{EW}O36D", f"O36A{BW}O29:O1-X1-Z1{EW}O36B",
+    f"O36A{BW}G43-D21:N35-A1-N35:N35{EW}O36B",
+]
+ENCLOSURE_MALFORMED = [
+    f"V11A{B}Aa1-G43", f"{B}Aa1-G43", f"Aa1-G43{E}V11B", f"V11A{E}Aa1{B}V11B",  # begin without end, an end first
+    f"V11A{B}{E}V11B", f"V11A-V11B", f"{B}{E}", f"V11A{B}Aa1{EW}V11B",  # empty, signs alone, the other kind
+    f'V11A{B}Aa1" "G43{E}V11B', f'V11A{B}Aa1"\u200d"G43{E}V11B', f'V11A{B}"\u200c"Aa1{E}V11B',
+    f"V11A{B}N5{B}Aa1{E}G43{E}V11B",  # nested: the inner one forms, the outer one not
+    f"V11A{B}X1:N35{E}{E}V11B", f"{B}{B}X1{E}", f"V11A{B}G38<13434>X1{E}V11B",  # too tall for the ring (rule E5)
+    f"N35:V11A{B}X1{E}V11B", f"V11A{B}X1:{E}V11B", f"V11A{B}X1::N35{E}V11B",  # joiners at the edges
+    f'V11A"\u200d"{B}X1{E}V11B', f'V11A{B}X1{E}"\u200d"V11B',
+]
+ENCLOSURE_WORDS = {  # golden lines: (advance of the line, glyphs that draw, frame glyphs), (glyph, x, y)
+    f"V11A{B}Aa1-G43-I9-G43{E}V11B": (  # Khufu: lone signs as groups of one, lines under each
+        5000, [("_0.u1340D", 964, 0), ("_0.u13171", 1748, 0), ("_0.u13191", 2847, 315), ("_0.u13171", 3946, 0)],
+        [("u13379.ring", 0, 0), ("_el.p.512.s", 617, 0), ("_el.p.512.e", 1311, 0), ("_el.p.512.s", 1311, 0),
+         ("_el.p.512.e", 2185, 0), ("_el.p.1024.s", 2185, 0), ("_el.p.1024.e", 3509, 0), ("_el.p.512.s", 3509, 0),
+         ("_el.p.512.e", 4383, 0), ("u1337A.ring", 4383, 0)]),
+    f"O36C{BW}D21:N35{EW}O36D": (  # a group in a walled enclosure: eight merlons on each band
+        2514, [("_0.u1308B", 1257, 599), ("_0.u13216", 1257, 121)],
+        [("u13288.ring", 0, 0), ("_el.w.1024.s", 640, 0), ("_el.w.1024.e", 1874, 0), ("_em.w.8", 1257, 0),
+         ("u13289.ring", 1874, 0)]),
+    f"V11A{B}G43<13434>X1{E}V11B": (  # an insertion, moved up by 13 so that the chick stands on the line
+        2094, [("u13171.shrink1", 617, 13), ("_3.u133CF", 1248, 782)],
+        [("u13379.ring", 0, 0), ("_el.p.512.s", 617, 0), ("_el.p.512.e", 1477, 0), ("u1337A.ring", 1477, 0)]),
+}
+
+
+def enclosure_texts():
+    """Royal names, walls, malformed text and seeded random enclosures."""
+    texts = [encode(m) for m in ROYAL_NAMES + WALLS + ENCLOSURE_MALFORMED]
+    texts += [encode(f"V11A{B}" + "-".join(["N5", "D21:N35", "Aa1", "G43"] * 6) + f"{E}V11B")]  # long
+    texts += [encode(f"A1-V11A{B}D21-N35-X1-Q3{E}V11B-A1"), encode(f'"ꜥnḫ "V11A{B}X1:N35{E}V11B" ḏt"')]
+    rng = random.Random(29)
+    codepoints = sorted(SIGNS)
+    small = [c for c in codepoints if L.insertable(SIGNS[c])]
+    birds = [c for c in L.BIRDS if c in SIGNS]
+    for _ in range(600):  # random groups, insertions and plain signs between random delimiters
+        text = []
+        for _ in range(rng.randint(0, 2)):
+            text.append(rng.choice(codepoints))
+        kind = rng.random() < 0.7
+        if rng.random() < 0.85:
+            text.append(rng.choice(L.OPENINGS))
+        text.append(0x1343C if kind else 0x1343E)
+        for _ in range(rng.randint(1, 6)):
+            r = rng.random()
+            if r < 0.4:
+                text.append(rng.choice(codepoints))
+            elif r < 0.7:
+                text += group([[rng.choice(codepoints) for _ in range(rng.randint(1, 2))]
+                               for _ in range(rng.randint(1, 3))])
+            elif r < 0.85:
+                text += [rng.choice(birds + small), rng.choice(list(L.CORNERS)), rng.choice(small)]
+            else:
+                text.append(rng.choice((V, H, 0x13432, 0x13437, 0x20, 0x200D, 0x1343C, 0x1343D, 0x1343F)))
+        text.append(0x1343D if kind or rng.random() < 0.1 else 0x1343F)
+        if rng.random() < 0.85:
+            text.append(rng.choice(L.CLOSINGS))
+        texts.append(text)
+    return texts
+
+
+def test_enclosures(shaper):
+    """Enclosures (layout rules E1 to E7): the font equals the reference
+    glyph by glyph, with the lines and the delimiters of every cluster, for
+    royal names, walls, malformed text and random enclosures, with calt on
+    and off; the golden lines; the outlines of the lines and pieces."""
+    texts = enclosure_texts()
+    compared, failed = compare_all(shaper, texts)
+    formed = sum(bool(L.enclosures(t)) and any(c.frame for c in L.layout(t, SIGNS, TABLE)) for t in texts)
+    off = Shaper(shaper.path, table=None, features={"calt": False})
+    off_count, off_failed = compare_all(off, texts[:len(ROYAL_NAMES) + len(WALLS)] + texts[-200:])
+    for mdc, expected in ENCLOSURE_WORDS.items():
+        shaped = shaper.shape(encode(mdc))
+        found = (sum(g[4] for g in shaped), [(g[0], g[2], g[3]) for g in shaped if shaper.drawn(g[0])],
+                 [(g[0], g[2], g[3]) for g in shaped if g[0] in shaper.frames])
+        check(found == expected, f"{mdc}: {found}, expected {expected}")
+    for mdc in ENCLOSURE_MALFORMED:  # no frame, every control a box, every sign drawn
+        text = encode(mdc)
+        shaped = shaper.shape(text)
+        drawn = [shaper.drawn(g[0]) for g in shaped if shaper.drawn(g[0])]
+        boxes = [c for c in text if c in L.ENCLOSURE]
+        laid = L.layout(text, SIGNS, TABLE)
+        formed_here = any(c.frame for c in laid)
+        pieces = [f.part[1] for c in laid for f in c.frame if f.part[0] == "piece"]
+        signs = [c for c in text if L.is_sign(c)]
+        drawn += [(c, None) for c in pieces]
+        if not formed_here:
+            check([c for c, _ in drawn if c in L.ENCLOSURE] == boxes and all(g[0] not in shaper.frames for g in shaped),
+                  f"{mdc}: {[g[0] for g in shaped]}")
+        check(sorted(c for c, _ in drawn if L.is_sign(c)) == sorted(signs), f"{mdc}: a sign is missing")
+    # the line pieces: the bands of the profile piece, from 0 to their length
+    for kind in ENCLOSURES.kinds:
+        edges = L.band_edges(kind)
+        for length in L.SEGMENTS:
+            box = bounds(shaper, ENCLOSURES.line(kind, length, "start"))
+            check(box == (0, edges[0], length, edges[7]), f"{kind} line {length}: {box}")
+            box = bounds(shaper, ENCLOSURES.line(kind, length, "end"))
+            check(box == (-length, edges[0], 0, edges[7]), f"{kind} line {length} (end): {box}")
+    for d in (*L.OPENINGS, *L.CLOSINGS):  # a joined delimiter reaches its edge, inside the ring
+        name, ring = ENCLOSURES.joined(d), L.default_rings()[d]
+        box = bounds(shaper, name)
+        check(shaper.font["hmtx"][name][0] == ring.advance and (box[2] == ring.advance if d in L.OPENINGS else box[0] == 0),
+              f"{name}: advance {shaper.font['hmtx'][name][0]}, ink {box}")
+    print(f"  enclosures: {compared} texts compared, {failed} differ ({formed} with an enclosure); "
+          f"with calt off {off_count}, {off_failed} differ")
+
+
 def glyphs_of(lookup, names):
     """Every glyph name a lookup refers to (coverages, classes, outputs)."""
     found = set()
@@ -745,7 +892,8 @@ def test_lookups(shaper):
     font = shaper.font
     egyptian = {*shaper.lone, *shaper.boxes, *shaper.variants, FALLBACK, *NAMES.joined.values(),
                 *NAMES.heads(), *NAMES.markers(), *(n for k in glyphs.LEVELS for n in NAMES.leveled(k)),
-                *NAMES.inserts.bases(), *NAMES.inserts.markers(), *AUTOMATIC.markers()}
+                *NAMES.inserts.bases(), *NAMES.inserts.markers(), *AUTOMATIC.markers(),
+                *ENCLOSURES.bases(), *ENCLOSURES.empty_bases(), *ENCLOSURES.marks()}
     shared = {".notdef", "space", NAMES.dotted_circle, NAMES.zwnj, *NAMES.ignorables}
     names = set(shaper.order)
     for tag in ("GSUB", "GPOS"):
@@ -787,8 +935,8 @@ def main():
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "fonts/ttf/Thoth-Regular.ttf"
     shaper = Shaper(path)
     tests = (test_cmap, test_lone_signs, test_controls, test_glyphs, test_golden, test_words,
-             test_groups, test_insertion, test_malformed, test_mixed, test_automatic, test_lookups,
-             test_budget)
+             test_groups, test_insertion, test_malformed, test_mixed, test_automatic, test_enclosures,
+             test_lookups, test_budget)
     for test in tests:
         try:
             test(shaper)
