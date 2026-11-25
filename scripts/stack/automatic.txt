@@ -16,10 +16,11 @@
 # typed.
 # Generated and sorted; not edited by hand.
 #
-# 90 entries: 63 course words, 23 test words, 4 bird-corner words.
+# 92 entries: 63 course words, 25 test words, 4 bird-corner words.
 <Aa1:N35-T35-G17-S29-A21-A1>
 <D21:Aa1-Y1>
 <D21:D36>
+<D21:D37-G17-N42:X1-B1>
 <D21:N35>
 <D21:V13-A1*B1:Z2>
 <D21:Z1>
@@ -58,7 +59,8 @@
 <N35:X1-S29
 <N35:X1-V31
 <N35:X1:I9
-<N41:X1*B1>
+<N41:X1-B1>
+<N42:X1-B1>
 <N5:Z1>
 <O29:O1*O1>
 <O34:N37-Y3-A1>
