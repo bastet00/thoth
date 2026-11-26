@@ -8,8 +8,6 @@ It is named after Thoth (Egyptian *ḏḥwtj*, Djehuty; Arabic تحوت), the go
 
 Status: **work in progress** – the font builds and contains the signs, imported from Noto Sans Egyptian Hieroglyphs, and the Latin letters for Egyptological transliteration (ꜣ ꜥ ḥ ḫ ẖ š ṯ ḏ and the rest), taken from Noto Sans (see [Credits](#credits)). It draws groups with Unicode's Egyptian hieroglyph format controls: the joiners, insertions, overlay, one level of nested groups, enclosures such as the cartouche, mirrored signs and damage shading (see the table below). Common groups also stack in plain text without any control (see below). Right-to-left runs are not supported yet.
 
-The font also contains the first few signs of Egyptian Hieroglyphs Extended-A (Unicode 16), drawn by the Thoth project in the style of the existing signs: U+135AC, U+1360A, U+1360C, U+138FC and U+13910. They are signs like all others: they stack, take insertions where their shape leaves room, go into enclosures, and can be mirrored and damaged.
-
 ## What the font does
 
 Unicode encodes hieroglyph layout with format controls (U+13430–U+13455). The font contains the OpenType rules that turn them into a quadrat:
@@ -70,7 +68,7 @@ The only hand-edited font source is `sources/Thoth-Regular.ufo`. `sources/build.
 
 ## Credits
 
-The sign outlines of the Egyptian Hieroglyphs block come from [Noto Sans Egyptian Hieroglyphs](https://github.com/notofonts/egyptian-hieroglyphs), designed by the Monotype Design Team for the Noto project and published under the SIL Open Font License (imported at commit `209775d`). The Latin letters, combining marks and brackets for transliteration come from [Noto Sans](https://github.com/notofonts/latin-greek-cyrillic) (release `NotoSans-v2.015`), also under the SIL Open Font License. Both copyright notices are kept in `OFL.txt` and in the font.
+The sign outlines come from [Noto Sans Egyptian Hieroglyphs](https://github.com/notofonts/egyptian-hieroglyphs), designed by the Monotype Design Team for the Noto project and published under the SIL Open Font License (imported at commit `209775d`). The Latin letters, combining marks and brackets for transliteration come from [Noto Sans](https://github.com/notofonts/latin-greek-cyrillic) (release `NotoSans-v2.015`), also under the SIL Open Font License. Both copyright notices are kept in `OFL.txt` and in the font.
 
 ## License
 

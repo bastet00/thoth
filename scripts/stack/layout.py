@@ -159,13 +159,7 @@ VERTICAL_JOINER = 0x13430
 HORIZONTAL_JOINER = 0x13431
 CONTROLS = range(0x13430, 0x13441)  # the format controls the font has
 PLACEHOLDERS = range(0x13441, 0x13447)  # blanks and lost signs
-BASIC = range(0x13000, 0x13430)  # Egyptian Hieroglyphs: the source has every sign of the block
-EXTENDED_A = range(0x13460, 0x14400)  # Egyptian Hieroglyphs Extended-A: only the signs drawn so far
-# The signs: the basic block and the Extended-A signs the source font has.
-# sign_table() adds the latter from the font it reads (a glyph with an
-# outline and one of those code points), so that adding a glyph to the
-# source is all it takes to make it a sign; until then only the basic block.
-HIEROGLYPHS = set(BASIC)
+HIEROGLYPHS = range(0x13000, 0x13430)
 
 # A blank has no outline. It takes the box of the lost sign of its size.
 BLANK_BOX = {0x13441: 0x13443, 0x13442: 0x13444}
@@ -194,12 +188,7 @@ Sign = namedtuple("Sign", "name advance box cell scales lift corners")
 
 
 def sign_table(font):
-    """{code point: Sign} for every sign of the source font (a ufoLib2 Font).
-    Also sets HIEROGLYPHS to the basic block and the font's Extended-A signs."""
-    extended = {codepoint for glyph in font if len(glyph) or glyph.components
-                for codepoint in glyph.unicodes if codepoint in EXTENDED_A}
-    HIEROGLYPHS.clear()
-    HIEROGLYPHS.update(BASIC, extended)
+    """{code point: Sign} for every sign of the source font (a ufoLib2 Font)."""
     glyphs = {}
     for glyph in font:
         for codepoint in glyph.unicodes:

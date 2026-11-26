@@ -46,9 +46,6 @@ import layout as L  # noqa: E402
 
 SOURCE = ufoLib2.Font.open(ROOT / "sources/Thoth-Regular.ufo")
 SIGNS = L.sign_table(SOURCE)
-# The signs of Egyptian Hieroglyphs Extended-A that the source draws, read
-# from the source here: every glyph with an outline and a code point of that block.
-EXTENDED = sorted(c for g in SOURCE if len(g) for c in g.unicodes if 0x13460 <= c <= 0x143FF)
 TABLE = L.automatic_table()  # the automatic layer (feature calt), on by default
 AUTOMATIC = glyphs.Automatic(TABLE)
 AUTOMATIC_MARKS = set(AUTOMATIC.markers())
@@ -68,8 +65,6 @@ FALLBACK = "control.fallback"
 # 268 KB. Before them: without the shape rule 12,602, 1,213,596 and 434,888;
 # without the automatic layer 12,594, 1,184,664 and 427,992; without corner
 # insertion 12,398, 1,083,928 and 392,620.
-# The first five signs of Extended-A (drawn by the project) add 65 glyphs,
-# 12,896 bytes TTF and about 4 KB WOFF2.
 MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 20_300, 1_950_000, 610_000
 
 # Egyptological transliteration, beyond the basic Latin set.
@@ -144,14 +139,6 @@ def enclosure_parts():
     return parts + [("merlons", "walled", n) for n in ENCLOSURES.counts]
 
 
-def basic(signs):
-    """The signs of the basic block and the placeholders, in code point order.
-    The seeded random texts of the tests before test_extended draw from these,
-    so that they stay the same texts when a sign of Extended-A is added;
-    test_extended mixes the added signs into the same kinds of text."""
-    return [c for c in sorted(signs) if c not in L.EXTENDED_A]
-
-
 def label(codepoints):
     return " ".join(f"{c:04X}" for c in codepoints)
 
@@ -161,7 +148,7 @@ def script_runs(codepoints):
     shapes: [(start, end)]. Spaces, marks and other characters of no script
     stay with the run they follow."""
     def kind(c):
-        if 0x13000 <= c <= 0x1345F or 0x13460 <= c <= 0x143FF:  # the two blocks of the script
+        if 0x13000 <= c <= 0x1345F:
             return "egyp"
         return None if unicodedata.category(chr(c))[0] in "ZPCMS" else "other"
     runs, current = [], None
@@ -422,7 +409,7 @@ def test_lone_signs(shaper):
             check(all(abs(a - b) <= 2 for a, b in zip(box, expected)),
                   f"U+{codepoint:05X}: ink {box}, expected {expected}")
             lifted += bool(sign.lift)
-    check(len(SIGNS) == 1078 + len(EXTENDED) and lifted == 185, f"{len(SIGNS)} signs, {lifted} lifted")
+    check(len(SIGNS) == 1078 and lifted == 185, f"{len(SIGNS)} signs, {lifted} lifted")
 
 
 def test_controls(shaper):
@@ -523,7 +510,7 @@ def random_groups():
     """Seeded random groups: at least 60 at each level and 60 over the caps,
     and at least 600 in all; plus groups exactly at the caps."""
     rng = random.Random(11)
-    codepoints = basic(SIGNS)
+    codepoints = sorted(SIGNS)
     tall = [c for c in codepoints if SIGNS[c].cell[1] >= 10]
     a1, z16 = gardiner("A1"), gardiner("Z16")
     f35, q3 = gardiner("F35"), gardiner("Q3")
@@ -582,7 +569,7 @@ MALFORMED = [
 def test_malformed(shaper):
     texts = [encode(mdc) for mdc in MALFORMED]
     rng = random.Random(3)
-    codepoints = basic(SIGNS)
+    codepoints = sorted(SIGNS)
     for _ in range(1500):  # any mixture of signs, joiners and other characters
         text = []
         for _ in range(rng.randint(1, 9)):
@@ -686,11 +673,11 @@ def test_insertion(shaper):
         check(not any(c.stacked for c in L.layout(text, SIGNS)), f"{mdc}: stacked")
         add(text)
     rng = random.Random(17)
-    codepoints = basic(SIGNS)
+    codepoints = sorted(SIGNS)
     small = [c for c in codepoints if L.insertable(SIGNS[c])]
     for _ in range(1500):  # any base, corner and sign; mostly signs small enough
         add([rng.choice(codepoints), rng.choice(list(L.CORNERS)), rng.choice(small if rng.random() < 0.8 else codepoints)])
-    roomy = sorted({(base, control) for base, _, control, _ in NAMES.inserts.zones if base not in L.EXTENDED_A})
+    roomy = sorted({(base, control) for base, _, control, _ in NAMES.inserts.zones})
     for _ in range(1500):  # a base and corner with room for some sign, and a small sign
         add([*rng.choice(roomy), rng.choice(small)])
     for _ in range(300):  # and among other text
@@ -724,7 +711,7 @@ def test_automatic(shaper):
     layout.py lays it out with the table, every entry of the table and
     seeded random plain text, next to spaces, ZWNJ and controls; with calt
     switched off, as layout.py without the table."""
-    signs = [c for c in basic(SIGNS) if c in L.HIEROGLYPHS]
+    signs = [c for c in sorted(SIGNS) if c in L.HIEROGLYPHS]
     rng = random.Random(11)
     known = sorted({c for key in TABLE for c in key if c not in (L.START, L.END)})
     entries = [[c for c in key if c not in (L.START, L.END)] for key in sorted(TABLE, key=str)]
@@ -826,11 +813,10 @@ NEST_MALFORMED = [
 ]
 
 
-def nested_random(rng, count, extra=()):
+def nested_random(rng, count):
     """Seeded random groups with segments and overlays (some one level
-    deeper than the font goes), some broken, some in a line. extra: more
-    signs to draw from."""
-    codepoints = basic(SIGNS) + list(extra)
+    deeper than the font goes), some broken, some in a line."""
+    codepoints = sorted(SIGNS)
     small = [c for c in codepoints if SIGNS[c].cell[1] <= 6]
     narrow = [c for c in small if SIGNS[c].cell[0] <= 14]
 
@@ -929,7 +915,7 @@ def test_side_insertion(shaper):
         run = [c for c in encode(mdc) if L.is_sign(c) or c in L.CONTROLS]
         check(L.side_insertion(*run, SIGNS) is None, f"{mdc}: the reference inserts it")
     rng = random.Random(43)
-    codepoints = basic(SIGNS)
+    codepoints = sorted(SIGNS)
     small = [c for c in codepoints if L.insertable(SIGNS[c])]
     inserted = 0
     for _ in range(1500):
@@ -1000,7 +986,7 @@ def enclosure_texts():
     texts += [encode(f"V11A{B}" + "-".join(["N5", "D21:N35", "Aa1", "G43"] * 6) + f"{E}V11B")]  # long
     texts += [encode(f"A1-V11A{B}D21-N35-X1-Q3{E}V11B-A1"), encode(f'"ꜥnḫ "V11A{B}X1:N35{E}V11B" ḏt"')]
     rng = random.Random(29)
-    codepoints = basic(SIGNS)
+    codepoints = sorted(SIGNS)
     small = [c for c in codepoints if L.insertable(SIGNS[c])]
     birds = [c for c in L.BIRDS if c in SIGNS]
     for _ in range(600):  # random groups, insertions and plain signs between random delimiters
@@ -1112,10 +1098,10 @@ MODIFIER_MALFORMED = [  # the stray modifier keeps its box (rule M3)
 ]
 
 
-def modifier_texts(rng, extra=()):
+def modifier_texts(rng):
     """Seeded random text with modifiers: groups, insertions, plain text,
-    malformed sequences. extra: more signs to draw from."""
-    hieroglyphs = [c for c in basic(SIGNS) if c in L.HIEROGLYPHS] + list(extra)
+    malformed sequences."""
+    hieroglyphs = [c for c in sorted(SIGNS) if c in L.HIEROGLYPHS]
     tall = [c for c in hieroglyphs if SIGNS[c].cell[1] >= 10]
     small = [c for c in hieroglyphs if L.insertable(SIGNS[c])]
     birds = [c for c in L.BIRDS if c in SIGNS]
@@ -1226,9 +1212,9 @@ ALL_WORDS = {
 }
 
 
-def all_control_texts(rng, count, extra=()):
-    """Seeded random text with every control (see above). extra: more signs to draw from."""
-    hieroglyphs = [c for c in basic(SIGNS) if c in L.HIEROGLYPHS] + list(extra)
+def all_control_texts(rng, count):
+    """Seeded random text with every control (see above)."""
+    hieroglyphs = [c for c in sorted(SIGNS) if c in L.HIEROGLYPHS]
     small = [c for c in hieroglyphs if L.insertable(SIGNS[c])]
     low = [c for c in hieroglyphs if SIGNS[c].cell[1] <= 6]
     narrow = [c for c in hieroglyphs if SIGNS[c].cell[0] <= 10]
@@ -1412,9 +1398,9 @@ COMBINED_WORDS = {
 }
 
 
-def combined_texts(rng, count, extra=()):
-    """Seeded random text with enclosures and modifiers (see above). extra: more signs to draw from."""
-    hieroglyphs = [c for c in basic(SIGNS) if c in L.HIEROGLYPHS] + list(extra)
+def combined_texts(rng, count):
+    """Seeded random text with enclosures and modifiers (see above)."""
+    hieroglyphs = [c for c in sorted(SIGNS) if c in L.HIEROGLYPHS]
     small = [c for c in hieroglyphs if L.insertable(SIGNS[c])]
     birds = [c for c in L.BIRDS if c in SIGNS]
     known = sorted({c for key in TABLE for c in key if c not in (L.START, L.END)})
@@ -1484,89 +1470,13 @@ def test_combined(shaper):
           f"with calt off {off_count}, {off_failed} differ")
 
 
-# Signs of Egyptian Hieroglyphs Extended-A drawn by the project (layout.py
-# section 2: the source's glyphs of that block are signs). Golden lines of the
-# font for the first five (written here, checked on the proof sheets), then
-# every added sign in every construction and in the seeded random texts of the
-# tests above, compared with the reference glyph by glyph.
-EXTENDED_WORDS = {  # mdc: (advance of the line, [(glyph, x, y)] of the glyphs that draw)
-    "<135AC>:N35": (922, [('_2.u135AC', 461, 249), ('_2.u13216', 461, 27)]),
-    "N35:<135AC>": (922, [('_2.u13216', 461, 852), ('_2.u135AC', 461, 27)]),
-    "<135AC>:D21": (889, [('_2.u135AC', 444, 272), ('_2.u1308B', 444, 4)]),
-    "D21:<135AC>": (889, [('_2.u1308B', 444, 808), ('_2.u135AC', 444, 4)]),
-    "<135AC>*X1": (1252, [('_2.u135AC', 411, 0), ('_2.u133CF', 1005, 0)]),
-    "<1360A>:N35": (922, [('_2.u1360A', 461, 249), ('_2.u13216', 461, 27)]),
-    "N35:<1360A>": (922, [('_2.u13216', 461, 852), ('_2.u1360A', 461, 27)]),
-    "<1360A>:D21": (922, [('_2.u1360A', 461, 272), ('_2.u1308B', 461, 4)]),
-    "D21:<1360A>": (922, [('_2.u1308B', 461, 808), ('_2.u1360A', 461, 4)]),
-    "<1360A>*X1": (1234, [('_3.u1360A', 422, 0), ('_3.u133CF', 1007, 0)]),
-    "<1360C>:N35": (1128, [('_1.u1360C', 564, 232), ('_1.u13216', 564, 1)]),
-    "N35:<1360C>": (1128, [('_1.u13216', 564, 848), ('_1.u1360C', 564, 1)]),
-    "<1360C>:D21": (988, [('_2.u1360C', 494, 316), ('_2.u1308B', 494, 27)]),
-    "D21:<1360C>": (988, [('_2.u1308B', 494, 785), ('_2.u1360C', 494, 27)]),
-    "<1360C>*X1": (1294, [('_3.u1360C', 452, 0), ('_3.u133CF', 1067, 0)]),
-    "<138FC>:N35": (922, [('_2.u138FC', 461, 249), ('_2.u13216', 461, 27)]),
-    "N35:<138FC>": (922, [('_2.u13216', 461, 852), ('_2.u138FC', 461, 27)]),
-    "<138FC>:D21": (889, [('_2.u138FC', 444, 272), ('_2.u1308B', 444, 4)]),
-    "D21:<138FC>": (889, [('_2.u1308B', 444, 808), ('_2.u138FC', 444, 4)]),
-    "<138FC>*X1": (1285, [('_2.u138FC', 428, 0), ('_2.u133CF', 1038, 0)]),
-    "<13910>:N35": (922, [('_2.u13910', 461, 249), ('_2.u13216', 461, 27)]),
-    "N35:<13910>": (922, [('_2.u13216', 461, 852), ('_2.u13910', 461, 27)]),
-    "<13910>:D21": (889, [('_2.u13910', 444, 272), ('_2.u1308B', 444, 4)]),
-    "D21:<13910>": (889, [('_2.u1308B', 444, 808), ('_2.u13910', 444, 4)]),
-    "<13910>*X1": (1204, [('_1.u13910', 355, 0), ('_1.u133CF', 925, 0)]),
-}
-
-
-def test_extended(shaper):
-    cmap, glyf = shaper.font.getBestCmap(), shaper.font["glyf"]
-    check(len(EXTENDED) >= 5 and all(c in cmap and glyf[cmap[c]].numberOfContours > 0 for c in EXTENDED),
-          f"the Extended-A signs {[hex(c) for c in EXTENDED]} are not all in cmap with outlines")
-    check(all(L.is_sign(c) and cmap[c] == SIGNS[c].name for c in EXTENDED), "an added sign is not a sign")
-    check(all(L.symmetric(c) or NAMES.modifiers.lone(c) in shaper.order for c in EXTENDED),
-          "an added sign has no mirrored glyph")
-    for mdc, expected in EXTENDED_WORDS.items():
-        shaped = shaper.shape(encode(mdc))
-        found = (sum(g[4] for g in shaped), [(g[0], g[2], g[3]) for g in shaped if shaper.drawn(g[0])])
-        check(found == expected, f"{mdc}: {found}, expected {expected}")
-    texts = [encode(mdc) for mdc in EXTENDED_WORDS]
-    x1, n35, d21, a1 = gardiner("X1"), gardiner("N35"), gardiner("D21"), gardiner("A1")
-    for c in EXTENDED:
-        texts += [[c], [c, V, n35, V, n35], [d21, H, c], [n35, V, c, H, x1], [a1, c, 0x20, c, c]]  # groups, plain text
-        texts += [[c, control, x1] for control in (*L.CORNERS, *L.SIDES)]  # inserted where the shape leaves room
-        texts += [[x1, control, c] for control in L.CORNERS]  # too large to insert: side by side
-        texts += [[0x13379, 0x1343C, c, 0x1343D, 0x1337A], [0x1343E, c, V, n35, H, x1, 0x1343F],  # enclosures
-                  [0x13379, 0x1343C, a1, c, MIR, 0x1343D, 0x1337A]]
-        texts += [[c, MIR], [c, MIR, V, n35], [n35, V, c, MIR, H, x1], [c, MIR, DMG["all"]], [c, DMG["ts"]],
-                  [c, DMG["all"], V, n35], [c, MIR, 0x13434, x1], [0x20, c, 0x13440, 0x200D]]  # mirrored, damaged
-    rng = random.Random(61)
-    extra = EXTENDED * max(1, len(basic(SIGNS)) // (2 * len(EXTENDED)))  # an added sign one draw in three
-    pool = basic(SIGNS) + extra
-    tall = [c for c in pool if SIGNS[c].cell[1] >= 10]
-    for _ in range(300):  # random groups
-        rows = [[rng.choice(tall if rng.random() < 0.3 else pool) for _ in range(rng.choice((1, 2, 2, 3)))]
-                for _ in range(rng.choice((1, 2, 2, 3)))]
-        texts.append(group(rows))
-    texts += nested_random(rng, 200, extra)
-    texts += modifier_texts(rng, extra)[:400]
-    texts += all_control_texts(rng, 300, extra)
-    texts += combined_texts(rng, 300, extra)
-    with_added = sum(any(c in EXTENDED for c in text) for text in texts)
-    compared, failed = compare_all(shaper, texts)
-    off = Shaper(shaper.path, table=None, features={"calt": False})
-    off_count, off_failed = compare_all(off, texts[:300])
-    check(with_added > 1000, f"only {with_added} texts with an added sign")
-    print(f"  Extended-A: {len(EXTENDED)} signs, {len(EXTENDED_WORDS)} golden lines; {compared} texts compared "
-          f"({with_added} with an added sign), {failed} differ; with calt off {off_count}, {off_failed} differ")
-
-
 def main():
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "fonts/ttf/Thoth-Regular.ttf"
     shaper = Shaper(path)
     tests = (test_cmap, test_lone_signs, test_controls, test_glyphs, test_golden, test_words,
              test_groups, test_insertion, test_malformed, test_mixed, test_automatic, test_nesting,
              test_side_insertion, test_enclosures, test_modifiers, test_combined, test_all_controls,
-             test_lookups, test_budget, test_extended)
+             test_lookups, test_budget)
     for test in tests:
         try:
             test(shaper)

@@ -24,10 +24,6 @@ import glyphs  # noqa: E402  (the generator, only to compare the fallback box)
 import layout as L  # noqa: E402
 
 SOURCE = ufoLib2.Font.open(ROOT / "sources/Thoth-Regular.ufo")
-# The signs of Egyptian Hieroglyphs Extended-A that the source draws, read
-# from the source here (not from layout.py): every glyph with an outline and
-# a code point of that block.
-EXTENDED = sorted(c for g in SOURCE if len(g) for c in g.unicodes if 0x13460 <= c <= 0x143FF)
 V, H = L.VERTICAL_JOINER, L.HORIZONTAL_JOINER  # written ":" and "*" below
 TOP = L.HEIGHT_LIMIT * L.UNIT  # the top of the quadrat's cells
 
@@ -149,14 +145,6 @@ MALFORMED = [
 
 failures = []
 checks = 0
-
-
-def basic(signs):
-    """The signs of the basic block and the placeholders, in code point order.
-    The seeded random texts of the tests before test_extended draw from these,
-    so that they stay the same texts when a sign of Extended-A is added;
-    test_extended mixes the added signs into the same kinds of text."""
-    return [c for c in sorted(signs) if c not in L.EXTENDED_A]
 
 
 def check(condition, message):
@@ -281,12 +269,9 @@ def test_constants(signs):
 
 
 def test_signs(signs):
-    """The size classes, scales and lifts of the 1,078 signs of the basic
-    block, by checksum; the added Extended-A signs are signs too."""
-    check(len(signs) == 1078 + len(EXTENDED) and [c for c in signs if c in L.EXTENDED_A] == EXTENDED,
-          f"{len(signs)} signs, expected 1,078 and the {len(EXTENDED)} of Extended-A in the source")
-    check(L.HIEROGLYPHS == {*range(0x13000, 0x13430), *EXTENDED}, "the set of hieroglyphs is not the source's")
-    table = repr([(c, s.cell, s.scales, s.lift) for c, s in sorted(signs.items()) if c not in L.EXTENDED_A])
+    """The size classes, scales and lifts of all 1,078 signs, by checksum."""
+    check(len(signs) == 1078, f"{len(signs)} signs, expected 1,078")
+    table = repr([(c, s.cell, s.scales, s.lift) for c, s in sorted(signs.items())])
     digest = hashlib.sha1(table.encode()).hexdigest()[:12]
     check(digest == "3dfbe9ff0256", f"the sign table changed: {digest}")
     # every sign fits a cell on its own: the font needs no larger classes
@@ -362,7 +347,7 @@ def test_owner_rules(signs):
     ]
     # O1: the signs of a row stand on one line
     for _ in range(300):
-        rows = [[rng.choice(basic(signs)) for _ in range(rng.choice((1, 2, 3)))]
+        rows = [[rng.choice(sorted(signs)) for _ in range(rng.choice((1, 2, 3)))]
                 for _ in range(rng.choice((1, 2, 3)))]
         text = group(rows)
         if len(text) == 1 or L.fit_level(*L.measure(tuple(map(tuple, rows)), signs)[:2]) is None:
@@ -403,7 +388,7 @@ def test_owner_rules(signs):
               f"{label(text)}: the row of two is not flush with the edges")
     justified = 0
     for _ in range(3000):  # the same for any justified row against a widest row of one sign
-        rows = [[rng.choice(basic(signs)) for _ in range(rng.choice((1, 2)))] for _ in range(2)]
+        rows = [[rng.choice(sorted(signs)) for _ in range(rng.choice((1, 2)))] for _ in range(2)]
         parsed = tuple(map(tuple, rows))
         width, _, sizes = L.measure(parsed, signs)
         if L.fit_level(*L.measure(parsed, signs)[:2]) is None:
@@ -461,7 +446,7 @@ def test_rounding(signs):
     half units from half the group less half its row (each half rounded
     down); a row stands on its cell bottoms."""
     rng = random.Random(7)
-    codepoints = basic(signs)
+    codepoints = sorted(signs)
     edge = L.SIDE_BEARING - L.GAP // 2
     for _ in range(500):
         rows = [[rng.choice(codepoints) for _ in range(rng.choice((1, 2, 2, 3)))]
@@ -604,11 +589,11 @@ def test_insertion(signs):
               f"{label(codepoints)}: not side by side")
     outcomes = {}
     rng = random.Random(13)
-    small = [c for c in basic(signs) if L.insertable(signs[c])]
+    small = [c for c in sorted(signs) if L.insertable(signs[c])]
     texts = [[bird, TE, sign] for bird in BIRDS for sign in (X1, Z1)]
     texts += [[base, control, sign] for base in (A1, D21, G1, G17, G43, I10, N35, O1, M17, Q3)
               for control in L.CORNERS for sign in (X1, Z1, Z4, N35, Q3)]
-    texts += [[rng.choice(basic(signs)), rng.choice(list(L.CORNERS)), rng.choice(small)] for _ in range(1500)]
+    texts += [[rng.choice(sorted(signs)), rng.choice(list(L.CORNERS)), rng.choice(small)] for _ in range(1500)]
     texts += [[rng.choice(BIRDS), rng.choice(list(L.CORNERS)), rng.choice(small)] for _ in range(500)]
     for text in texts:
         check_visible(text + [0x20, B1], signs)
@@ -644,7 +629,7 @@ def test_malformed(signs):
 def test_random(signs):
     """Random groups and random text: whatever it is, everything stays visible."""
     rng = random.Random(3)
-    codepoints = basic(signs)
+    codepoints = sorted(signs)
     tall = [c for c in codepoints if signs[c].cell[1] == 12]
     levels = {}
     for n in range(1200):  # well-formed groups of one to four rows
@@ -835,13 +820,13 @@ def test_automatic(signs):
     found = [(c.advance, list(c.glyphs)) for c in L.layout([O34, I9, D19, A2], signs, table)]
     check(found == [(1324, [(O34, 2, 748, 0, 0.973), (I9, 7, 108, 0, 0.872)]), (794, [(D19, 0, 0, 0, 1.0)]),
                     (859, [(A2, 0, 0, 0, 1.0)])], f"O34 I9 D19 A2: {found}")
-    half = [c for c in basic(signs) if L.half_block(c, signs)]
+    half = [c for c in sorted(signs) if L.half_block(c, signs)]
     check(len(half) == 157 and all(c in L.HIEROGLYPHS and signs[c].cell[1] <= 6 and signs[c].cell[0] >= 14
                                    for c in half), f"{len(half)} half-block signs")
     check(all(L.fit_level(*L.measure(((a,), (b,)), signs)[:2]) == 0 for a in half[::7] for b in half[::5]),
           "a pair of half-block signs is not at level 0")
-    lower = [c for c in basic(signs) if c not in half and signs[c].cell[1] < L.HEIGHT_LIMIT]
-    tall = [c for c in basic(signs) if signs[c].cell[1] >= L.HEIGHT_LIMIT]
+    lower = [c for c in sorted(signs) if c not in half and signs[c].cell[1] < L.HEIGHT_LIMIT]
+    tall = [c for c in sorted(signs) if signs[c].cell[1] >= L.HEIGHT_LIMIT]
     pairs = 0
     for _ in range(1500):
         text = []
@@ -1017,7 +1002,7 @@ def test_nesting(signs):
     # random well-formed and broken nested groups: everything stays visible,
     # a well-formed one that fits is one group at one level
     rng = random.Random(29)
-    codepoints = basic(signs)
+    codepoints = sorted(signs)
     small = [c for c in codepoints if signs[c].cell[1] <= 6]
     narrow = [c for c in small if signs[c].cell[0] <= 14]  # two of them fit a box
     outcomes = {}
@@ -1119,7 +1104,7 @@ def test_side_insertion(signs):
         check(not any(c.stacked for c in L.layout(codepoints, signs)), f"{label(codepoints)}: stacked")
         check_visible(codepoints, signs)
     rng = random.Random(31)
-    codepoints = basic(signs)
+    codepoints = sorted(signs)
     small = [c for c in codepoints if L.insertable(signs[c])]
     outcomes = {}
     for _ in range(3000):
@@ -1261,7 +1246,7 @@ def test_enclosures(signs):
         outside = L.layout(text, signs)[0] if len(text) > 1 else L._stacked(0, 1, ((A1,),), 0, signs)
         check(inside.glyphs == outside.glyphs and inside.advance == outside.advance, f"{label(text)} inside")
     rng = random.Random(41)
-    codepoints = basic(signs)
+    codepoints = sorted(signs)
     formed = sum(check_enclosed(enclosure_text(rng, codepoints), signs, table if n % 2 else None)
                  for n in range(800))
     check(formed > 300, f"only {formed} random texts formed an enclosure")
@@ -1342,7 +1327,7 @@ def test_modifiers(signs):
     }
     for text, expected in lits.items():
         check(L.literals(list(text)) == expected, f"literals {label(text)}: {L.literals(list(text))}")
-    hieroglyphs = [c for c in basic(signs) if c in L.HIEROGLYPHS]
+    hieroglyphs = [c for c in sorted(signs) if c in L.HIEROGLYPHS]
     symmetric = [c for c in hieroglyphs if L.symmetric(c)]
     check(len(symmetric) == 254 and N35 in symmetric and D21 in symmetric and A1 not in symmetric,
           f"{len(symmetric)} symmetric signs")
@@ -1514,44 +1499,6 @@ def combined_text(rng, codepoints, small):
     return text + [c for _ in range(rng.randint(0, 1)) for c in part()]
 
 
-def check_combined_text(text, signs, use, counts):
-    """The properties of test_combined for one text (counts: updated)."""
-    laid = L.layout(text, signs, use)
-    bare = L.layout(strip(text), signs, use, modifiers=False)
-    counts["formed"] += any(c.frame for c in laid)
-    # the modifiers move nothing but the drawing: drop the strays' boxes,
-    # the shading and the small mirror box, and turn mirrored signs back
-    kept = [c for c in laid if c.glyphs[:1] == () or c.glyphs[0].codepoint not in L.DAMAGE]
-    ref = [c for c in bare if c.glyphs[:1] == () or c.glyphs[0].codepoint != L.STRAY]
-    unturned = [[g._replace(x=g.x - L._round(-g.scale * (signs[g.codepoint].box[0] + signs[g.codepoint].box[2])),
-                            scale=-g.scale) if g.scale < 0 else g
-                 for g in c.glyphs if not L.is_hatch(g.codepoint)
-                 and not (g.codepoint == MIR and g.scale == L.MIRROR_BOX)] for c in kept]
-    for c, glyphs in zip(kept, unturned):  # rule M5: the inserted sign stands in the mirrored zone
-        if c.stacked and len(glyphs) == 2 and c.glyphs[0].scale < 0 and glyphs[1].level != glyphs[0].level:
-            box, dx = signs[glyphs[0].codepoint].box, L.sign_offset(signs[glyphs[1].codepoint], glyphs[1].level)[0]
-            glyphs[1] = glyphs[1]._replace(x=box[0] + box[2] - glyphs[1].x + 2 * dx)
-    unturned = [tuple(glyphs) for glyphs in unturned]
-    check([(c.advance, c.frame) for c in kept] == [(c.advance, c.frame) for c in ref]
-          and unturned == [c.glyphs for c in ref], f"{label(text)}: the modifiers change the layout")
-    # each piece of shading on the sign before it: at the middle of its
-    # ink across and the middle of its cell above the bottom of its ink
-    for c in laid:
-        sign = None
-        for g in c.glyphs:
-            if g.codepoint == MIR and g.scale == L.MIRROR_BOX:  # rule M8, over the sign before
-                continue
-            if not L.is_hatch(g.codepoint):
-                sign = g if g.codepoint in signs else None
-                counts["mirrored"] += g.scale < 0
-                continue
-            counts["pieces"] += 1
-            ink = L.ink_box(sign, signs)
-            middle = L.damage_size(signs[sign.codepoint], sign.level)[2]
-            check(abs(g.x - (ink[0] + ink[2]) / 2) <= 1.5 and abs(g.y - ink[1] - middle) <= 1.5,
-                  f"{label(text)}: shading at {(g.x, g.y)} off its sign {tuple(sign)}")
-
-
 def test_combined(signs):
     """Enclosures with modified signs: golden cases; and, on seeded random
     text, the modifiers make, break and move no enclosure, change no sign
@@ -1577,13 +1524,46 @@ def test_combined(signs):
           and [len([g for g in c.glyphs if not L.is_hatch(g.codepoint)]) for c in inside]
           == [len(c.glyphs) for c in plain], "a modified word of the table is stacked differently in a cartouche")
     rng = random.Random(43)
-    codepoints = [c for c in basic(signs) if c in L.HIEROGLYPHS]
+    codepoints = [c for c in sorted(signs) if c in L.HIEROGLYPHS]
     small = [c for c in codepoints if L.insertable(signs[c])]
     counts = {"formed": 0, "mirrored": 0, "pieces": 0}
     for n in range(1500):
         text = combined_text(rng, codepoints, small)
         use = table if n % 2 else None
-        check_combined_text(text, signs, use, counts)
+        laid = L.layout(text, signs, use)
+        bare = L.layout(strip(text), signs, use, modifiers=False)
+        counts["formed"] += any(c.frame for c in laid)
+        # the modifiers move nothing but the drawing: drop the strays' boxes,
+        # the shading and the small mirror box, and turn mirrored signs back
+        kept = [c for c in laid if c.glyphs[:1] == () or c.glyphs[0].codepoint not in L.DAMAGE]
+        ref = [c for c in bare if c.glyphs[:1] == () or c.glyphs[0].codepoint != L.STRAY]
+        unturned = [[g._replace(x=g.x - L._round(-g.scale * (signs[g.codepoint].box[0] + signs[g.codepoint].box[2])),
+                                scale=-g.scale) if g.scale < 0 else g
+                     for g in c.glyphs if not L.is_hatch(g.codepoint)
+                     and not (g.codepoint == MIR and g.scale == L.MIRROR_BOX)] for c in kept]
+        for c, glyphs in zip(kept, unturned):  # rule M5: the inserted sign stands in the mirrored zone
+            if c.stacked and len(glyphs) == 2 and c.glyphs[0].scale < 0 and glyphs[1].level != glyphs[0].level:
+                box, dx = signs[glyphs[0].codepoint].box, L.sign_offset(signs[glyphs[1].codepoint], glyphs[1].level)[0]
+                glyphs[1] = glyphs[1]._replace(x=box[0] + box[2] - glyphs[1].x + 2 * dx)
+        unturned = [tuple(glyphs) for glyphs in unturned]
+        check([(c.advance, c.frame) for c in kept] == [(c.advance, c.frame) for c in ref]
+              and unturned == [c.glyphs for c in ref], f"{label(text)}: the modifiers change the layout")
+        # each piece of shading on the sign before it: at the middle of its
+        # ink across and the middle of its cell above the bottom of its ink
+        for c in laid:
+            sign = None
+            for g in c.glyphs:
+                if g.codepoint == MIR and g.scale == L.MIRROR_BOX:  # rule M8, over the sign before
+                    continue
+                if not L.is_hatch(g.codepoint):
+                    sign = g if g.codepoint in signs else None
+                    counts["mirrored"] += g.scale < 0
+                    continue
+                counts["pieces"] += 1
+                ink = L.ink_box(sign, signs)
+                middle = L.damage_size(signs[sign.codepoint], sign.level)[2]
+                check(abs(g.x - (ink[0] + ink[2]) / 2) <= 1.5 and abs(g.y - ink[1] - middle) <= 1.5,
+                      f"{label(text)}: shading at {(g.x, g.y)} off its sign {tuple(sign)}")
     check(counts["formed"] > 1000 and counts["mirrored"] > 1000 and counts["pieces"] > 1000,
           f"random combined text reaches too few cases: {counts}")
     print(f"  enclosures with modifiers: {len(COMBINED_GOLDEN)} golden, {len(COMBINED_UNFORMED)} unformed, "
@@ -1680,49 +1660,6 @@ def all_controls_text(rng, codepoints, small):
     return text + [c for _ in range(rng.randint(0, 1)) for c in part()]
 
 
-def check_all_controls_text(text, signs, use, counts):
-    """The properties of test_all_controls for one text (counts: updated)."""
-    laid = L.layout(text, signs, use)
-    bare = L.layout(strip(text), signs, use, modifiers=False)
-    counts["formed"] += any(c.frame for c in laid)
-    kept = [c for c in laid if c.glyphs[:1] == () or c.glyphs[0].codepoint not in L.DAMAGE]
-    ref = [c for c in bare if c.glyphs[:1] == () or c.glyphs[0].codepoint != L.STRAY]
-    unturned = [[g._replace(x=g.x - L._round(-g.scale * (signs[g.codepoint].box[0] + signs[g.codepoint].box[2])),
-                            scale=-g.scale) if g.scale < 0 else g
-                 for g in c.glyphs if not L.is_hatch(g.codepoint)
-                 and not (g.codepoint == MIR and g.scale == L.MIRROR_BOX)] for c in kept]
-    for c, glyphs in zip(kept, unturned):  # rule M5: a corner's sign stands in the mirrored zone
-        if c.stacked and len(glyphs) == 2 and c.glyphs[0].scale < 0 and glyphs[1].level != glyphs[0].level:
-            box, dx = signs[glyphs[0].codepoint].box, L.sign_offset(signs[glyphs[1].codepoint], glyphs[1].level)[0]
-            glyphs[1] = glyphs[1]._replace(x=box[0] + box[2] - glyphs[1].x + 2 * dx)
-    check([(c.advance, c.frame) for c in kept] == [(c.advance, c.frame) for c in ref]
-          and [tuple(g) for g in unturned] == [c.glyphs for c in ref], f"{label(text)}: the modifiers change the layout")
-    for c in laid:
-        run = [x for x in text[c.start:c.end] if L.is_sign(x) or x in L.CONTROLS]
-        boxed = c.stacked and any(x in L.NESTING for x in run)
-        side = c.stacked and any(x in L.SIDES for x in run)
-        counts["boxes"] += boxed
-        counts["boxes in a ring"] += boxed and bool(c.frame)
-        counts["sides"] += side
-        counts["sides in a ring"] += side and bool(c.frame)
-        counts["modified"] += (boxed or side) and any(g.scale < 0 or L.is_hatch(g.codepoint) for g in c.glyphs)
-        if c.frame and any(f.part[0] == "line" for f in c.frame):  # rule E4: the ink inside the ring
-            inks = [L.ink_box(g, signs) for g in c.glyphs if g.codepoint in signs]
-            check(all(-2 <= ink[1] and ink[3] <= L.ENCLOSED_TOP + 2 for ink in inks),
-                  f"{label(text)}: the ink of the cluster at {c.start} leaves the inside of the ring")
-        sign = None
-        for g in c.glyphs:  # each piece of shading on the sign before it
-            if g.codepoint == MIR and g.scale == L.MIRROR_BOX:
-                continue
-            if not L.is_hatch(g.codepoint):
-                sign = g if g.codepoint in signs else None
-                continue
-            ink = L.ink_box(sign, signs)
-            middle = L.damage_size(signs[sign.codepoint], sign.level)[2]
-            check(abs(g.x - (ink[0] + ink[2]) / 2) <= 1.5 and abs(g.y - ink[1] - middle) <= 1.5,
-                  f"{label(text)}: shading at {(g.x, g.y)} off its sign {tuple(sign)}")
-
-
 signs_table = {}
 
 
@@ -1738,123 +1675,54 @@ def test_all_controls(signs):
         check(got == expected, f"{label(text)}:\n  got      {got}\n  expected {expected}")
     table = L.automatic_table()
     rng = random.Random(47)
-    codepoints = [c for c in basic(signs) if c in L.HIEROGLYPHS]
+    codepoints = [c for c in sorted(signs) if c in L.HIEROGLYPHS]
     small = [c for c in codepoints if L.insertable(signs[c])]
     counts = {"formed": 0, "boxes": 0, "boxes in a ring": 0, "sides": 0, "sides in a ring": 0, "modified": 0}
     for n in range(1500):
         text = all_controls_text(rng, codepoints, small)
         use = table if n % 2 else None
-        check_all_controls_text(text, signs, use, counts)
+        laid = L.layout(text, signs, use)
+        bare = L.layout(strip(text), signs, use, modifiers=False)
+        counts["formed"] += any(c.frame for c in laid)
+        kept = [c for c in laid if c.glyphs[:1] == () or c.glyphs[0].codepoint not in L.DAMAGE]
+        ref = [c for c in bare if c.glyphs[:1] == () or c.glyphs[0].codepoint != L.STRAY]
+        unturned = [[g._replace(x=g.x - L._round(-g.scale * (signs[g.codepoint].box[0] + signs[g.codepoint].box[2])),
+                                scale=-g.scale) if g.scale < 0 else g
+                     for g in c.glyphs if not L.is_hatch(g.codepoint)
+                     and not (g.codepoint == MIR and g.scale == L.MIRROR_BOX)] for c in kept]
+        for c, glyphs in zip(kept, unturned):  # rule M5: a corner's sign stands in the mirrored zone
+            if c.stacked and len(glyphs) == 2 and c.glyphs[0].scale < 0 and glyphs[1].level != glyphs[0].level:
+                box, dx = signs[glyphs[0].codepoint].box, L.sign_offset(signs[glyphs[1].codepoint], glyphs[1].level)[0]
+                glyphs[1] = glyphs[1]._replace(x=box[0] + box[2] - glyphs[1].x + 2 * dx)
+        check([(c.advance, c.frame) for c in kept] == [(c.advance, c.frame) for c in ref]
+              and [tuple(g) for g in unturned] == [c.glyphs for c in ref], f"{label(text)}: the modifiers change the layout")
+        for c in laid:
+            run = [x for x in text[c.start:c.end] if L.is_sign(x) or x in L.CONTROLS]
+            boxed = c.stacked and any(x in L.NESTING for x in run)
+            side = c.stacked and any(x in L.SIDES for x in run)
+            counts["boxes"] += boxed
+            counts["boxes in a ring"] += boxed and bool(c.frame)
+            counts["sides"] += side
+            counts["sides in a ring"] += side and bool(c.frame)
+            counts["modified"] += (boxed or side) and any(g.scale < 0 or L.is_hatch(g.codepoint) for g in c.glyphs)
+            if c.frame and any(f.part[0] == "line" for f in c.frame):  # rule E4: the ink inside the ring
+                inks = [L.ink_box(g, signs) for g in c.glyphs if g.codepoint in signs]
+                check(all(-2 <= ink[1] and ink[3] <= L.ENCLOSED_TOP + 2 for ink in inks),
+                      f"{label(text)}: the ink of the cluster at {c.start} leaves the inside of the ring")
+            sign = None
+            for g in c.glyphs:  # each piece of shading on the sign before it
+                if g.codepoint == MIR and g.scale == L.MIRROR_BOX:
+                    continue
+                if not L.is_hatch(g.codepoint):
+                    sign = g if g.codepoint in signs else None
+                    continue
+                ink = L.ink_box(sign, signs)
+                middle = L.damage_size(signs[sign.codepoint], sign.level)[2]
+                check(abs(g.x - (ink[0] + ink[2]) / 2) <= 1.5 and abs(g.y - ink[1] - middle) <= 1.5,
+                      f"{label(text)}: shading at {(g.x, g.y)} off its sign {tuple(sign)}")
     check(counts["boxes in a ring"] > 150 and counts["sides in a ring"] > 60 and counts["modified"] > 300,
           f"random text with all controls reaches too few cases: {counts}")
     print(f"  all controls: {len(ALL_GOLDEN)} golden, 1500 random texts ({counts})")
-
-
-# --- signs of Egyptian Hieroglyphs Extended-A drawn by the project ----------
-
-U135AC, U1360A, U1360C, U138FC, U13910 = 0x135AC, 0x1360A, 0x1360C, 0x138FC, 0x13910  # the first five
-EXTENDED_GOLDEN = [  # each above and below water and mouth, beside bread; written here, checked on the proof sheets
-    ([U135AC, V, N35], [(922, [(U135AC, 68, 249, 2, 0.702), (N35, 16, 87, 2, 0.744)])]),
-    ([N35, V, U135AC], [(922, [(N35, 16, 912, 2, 0.744), (U135AC, 68, 27, 2, 0.702)])]),
-    ([U135AC, V, D21], [(889, [(U135AC, 51, 272, 2, 0.702), (D21, 13, 8, 2, 0.733)])]),
-    ([D21, V, U135AC], [(889, [(D21, 13, 812, 2, 0.733), (U135AC, 51, 4, 2, 0.702)])]),
-    ([U135AC, H, X1], [(1252, [(U135AC, 18, 0, 2, 0.702), (X1, 771, -149, 2, 0.738)])]),
-    ([U1360A, V, N35], [(922, [(U1360A, 13, 249, 2, 0.731), (N35, 16, 87, 2, 0.744)])]),
-    ([N35, V, U1360A], [(922, [(N35, 16, 912, 2, 0.744), (U1360A, 13, 27, 2, 0.731)])]),
-    ([U1360A, V, D21], [(922, [(U1360A, 13, 272, 2, 0.731), (D21, 30, 8, 2, 0.733)])]),
-    ([D21, V, U1360A], [(922, [(D21, 30, 812, 2, 0.733), (U1360A, 13, 4, 2, 0.731)])]),
-    ([U1360A, H, X1], [(1234, [(U1360A, 21, 0, 3, 0.655), (X1, 797, -134, 3, 0.665)])]),
-    ([U1360C, V, N35], [(1128, [(U1360C, 13, 232, 1, 0.744), (N35, 52, 70, 1, 0.855)])]),
-    ([N35, V, U1360C], [(1128, [(N35, 52, 917, 1, 0.855), (U1360C, 13, 1, 1, 0.744)])]),
-    ([U1360C, V, D21], [(988, [(U1360C, 18, 316, 2, 0.643), (D21, 63, 31, 2, 0.733)])]),
-    ([D21, V, U1360C], [(988, [(D21, 63, 789, 2, 0.733), (U1360C, 18, 27, 2, 0.643)])]),
-    ([U1360C, H, X1], [(1294, [(U1360C, 21, 0, 3, 0.582), (X1, 857, -134, 3, 0.665)])]),
-    ([U138FC, V, N35], [(922, [(U138FC, 47, 249, 2, 0.733), (N35, 16, 87, 2, 0.744)])]),
-    ([N35, V, U138FC], [(922, [(N35, 16, 912, 2, 0.744), (U138FC, 47, 27, 2, 0.733)])]),
-    ([U138FC, V, D21], [(889, [(U138FC, 30, 272, 2, 0.733), (D21, 13, 8, 2, 0.733)])]),
-    ([D21, V, U138FC], [(889, [(D21, 13, 812, 2, 0.733), (U138FC, 30, 4, 2, 0.733)])]),
-    ([U138FC, H, X1], [(1285, [(U138FC, 14, 0, 2, 0.733), (X1, 804, -149, 2, 0.738)])]),
-    ([U13910, V, N35], [(922, [(U13910, 165, 249, 2, 0.738), (N35, 16, 87, 2, 0.744)])]),
-    ([N35, V, U13910], [(922, [(N35, 16, 912, 2, 0.744), (U13910, 165, 27, 2, 0.738)])]),
-    ([U13910, V, D21], [(889, [(U13910, 148, 272, 2, 0.738), (D21, 13, 8, 2, 0.733)])]),
-    ([D21, V, U13910], [(889, [(D21, 13, 812, 2, 0.733), (U13910, 148, 4, 2, 0.738)])]),
-    ([U13910, H, X1], [(1204, [(U13910, 12, 0, 1, 0.854), (X1, 654, -173, 1, 0.855)])]),
-]
-EXTENDED_INSERTED = {  # rules I1 to I6, S1 to S5 by shape alone: (sign, control) that put X1 inside the sign
-    (U1360A, TS), (U1360A, BS), (U1360C, BS), (U13910, TS), (U138FC, L.MIDDLE_INSERT), (U138FC, L.BOTTOM_INSERT)}
-
-
-def test_extended(signs):
-    """The added signs of Extended-A are signs like any other: a size class,
-    scales and corners from their own outlines; groups, insertions where
-    their shape leaves room, enclosures, mirroring and damage; and the
-    random texts of the tests above, with the added signs mixed in."""
-    check(len(EXTENDED) >= 5 and {U135AC, U1360A, U1360C, U138FC, U13910} <= set(EXTENDED),
-          f"the source has the Extended-A signs {[hex(c) for c in EXTENDED]}")
-    for codepoints, expected in EXTENDED_GOLDEN:
-        got = result(codepoints, signs)
-        check(got == expected, f"{label(codepoints)}:\n  got      {got}\n  expected {expected}")
-        check_visible(codepoints, signs)
-    for c in EXTENDED:
-        sign = signs[c]
-        check(sign.name == f"u{c:05X}" and sign.cell[0] <= L.WIDTH_LIMIT and sign.cell[1] <= L.HEIGHT_LIMIT
-              and len(sign.scales) == len(L.LEVEL_HEIGHTS), f"U+{c:X}: {sign}")
-        check(result([c], signs) == [(sign.advance, [(c, 0, sign.lift, 0, 1.0)])], f"U+{c:X} alone")
-        for control in (*L.CORNERS, *L.SIDES):
-            text = [c, control, X1]
-            check_visible(text, signs)
-            found = (L.insertion(c, control, X1, signs) if control in L.CORNERS
-                     else L.side_insertion(c, control, X1, signs))
-            if c in (U135AC, U1360A, U1360C, U138FC, U13910):
-                check((found is not None) == ((c, control) in EXTENDED_INSERTED),
-                      f"U+{c:X} {control:X} X1: {'inserted' if found else 'side by side'}")
-        # in a cartouche and a wall, alone and in a group: the enclosure forms
-        for text in ([V11A, BEGIN, c, END_ENC, V11B], [BEGIN_W, c, V, N35, END_W], [BEGIN, X1, H, c, END_ENC]):
-            check(check_enclosed(text, signs), f"{label(text)}: no enclosure")
-        # mirrored: one flipped glyph with the same ink box, alone and at levels 0 to 3
-        for text in ([c, MIR], [c, MIR, V, N35], [N35, V, c, MIR, H, X1]):
-            laid = L.layout(text, signs)
-            plain = L.layout([x for x in text if x != MIR], signs)
-            (g,) = [g for cl in laid for g in cl.glyphs if g.codepoint == c]
-            (p,) = [g for cl in plain for g in cl.glyphs if g.codepoint == c]
-            check(L.symmetric(c) or (g.scale == -p.scale < 0 and all(
-                abs(a - b) <= 1 for a, b in zip(L.ink_box(g, signs), L.ink_box(p, signs)))), f"{label(text)}: not mirrored")
-            check([cl.advance for cl in laid] == [cl.advance for cl in plain], f"{label(text)}: mirroring moved a group")
-        # damaged in all four quarters: four pieces on the sign
-        laid = L.layout([c, DAMAGED], signs)
-        check(len(laid) == 1 and sum(L.is_hatch(g.codepoint) for g in laid[0].glyphs) == 4, f"U+{c:X} damaged")
-    # the random texts of the tests above, with the added signs one draw in three
-    rng = random.Random(59)
-    pool = basic(signs) + EXTENDED * max(1, len(basic(signs)) // (2 * len(EXTENDED)))
-    hieroglyphs = [c for c in pool if c in L.HIEROGLYPHS]
-    small = [c for c in basic(signs) if L.insertable(signs[c])]
-    tall = [c for c in pool if signs[c].cell[1] == 12]
-    levels, formed = {}, 0
-    for n in range(600):  # groups of one to four rows
-        rows = [[rng.choice(tall if n % 4 == 0 else pool) for _ in range(rng.choice((1, 1, 2, 2, 3)))]
-                for _ in range(rng.choice((1, 2, 2, 3, 4)))]
-        text = group(rows)
-        check_visible(text, signs)
-        level = L.fit_level(*L.measure(tuple(map(tuple, rows)), signs)[:2])
-        levels[level] = levels.get(level, 0) + 1
-    for _ in range(600):  # signs, joiners, corner and side controls, and other text
-        text = [rng.choice(pool) if rng.random() < 0.6 else
-                rng.choice((V, H, TS, TE, BS, BE, L.MIDDLE_INSERT, L.TOP_INSERT, 0x20)) for _ in range(rng.randint(1, 8))]
-        check_visible(text, signs)
-    table = L.automatic_table()
-    for n in range(300):
-        formed += check_enclosed(enclosure_text(rng, hieroglyphs), signs, table if n % 2 else None)
-    signs_table.update(signs)
-    combined = {"formed": 0, "mirrored": 0, "pieces": 0}
-    every = {"formed": 0, "boxes": 0, "boxes in a ring": 0, "sides": 0, "sides in a ring": 0, "modified": 0}
-    for n in range(300):  # with modifiers: the properties of test_combined and test_all_controls
-        check_combined_text(combined_text(rng, hieroglyphs, small), signs, table if n % 2 else None, combined)
-        check_all_controls_text(all_controls_text(rng, hieroglyphs, small), signs, table if n % 2 else None, every)
-    formed += combined["formed"] + every["formed"]
-    check(len(levels) >= 6 and formed > 600 and combined["mirrored"] > 100 and every["modified"] > 30,
-          f"random text with added signs reaches too few cases: {levels}, {combined}, {every}")
-    print(f"  Extended-A: {len(EXTENDED)} signs, {len(EXTENDED_GOLDEN)} golden, 2,100 random texts with them "
-          f"({formed} with an enclosure)")
 
 
 def main():
@@ -1862,7 +1730,7 @@ def main():
     tests = (test_constants, test_signs, test_grammar, test_golden, test_golden_notices_constants,
              test_owner_rules, test_rounding, test_insertion, test_malformed, test_random,
              test_automatic, test_nesting, test_side_insertion, test_enclosures, test_modifiers, test_combined,
-             test_all_controls, test_extended)
+             test_all_controls)
     for test in tests:
         try:
             test(signs)

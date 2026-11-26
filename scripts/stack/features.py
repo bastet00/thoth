@@ -664,7 +664,7 @@ def categories(font, names, automatic):
     The group heads are bases, the rest of what the generator adds is marks.
     """
     bases = {glyph.name for glyph in font
-             if any(u in SIGNS or u in L.HIEROGLYPHS or u == DOTTED_CIRCLE for u in glyph.unicodes)}
+             if any(u in SIGNS or u == DOTTED_CIRCLE for u in glyph.unicodes)}
     bases |= {*names.joined.values(), *names.heads(), *names.inserts.bases()}
     marks = set(names.markers()) | set(names.inserts.markers()) | set(automatic.markers())
     for level in LEVELS:
