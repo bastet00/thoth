@@ -629,8 +629,8 @@ def add_features(font, names, automatic):
     _splice(w, "unstack_signs", lambda part: _gsub_nest_fallback(names, part, nest))
     w.gsub += _gsub_nest_level(names, w, nest)
     _gpos(names, w, nest_cells(nest))
-    nested = []
-    _splice(w, "place_cells", lambda part: nested.extend(_gpos_nest(names, part, nest)) or nested, table="gpos")
+    nested = _gpos_nest(names, w, nest)
+    nested += _place_again(w, nested)
 
     def feature(tag, lookups, automatic=False):
         # ufo2ft puts the Latin mark rules at "# Automatic Code", for every
@@ -1161,15 +1161,18 @@ def _gsub_nest_level(n, w, nest):
 
 
 def _gpos_nest(n, w, nest):
-    """GPOS of segments and overlay, defined right before place_cells.
-    Returns the lookups (for mkmk).
+    """GPOS of segments and overlay, defined right after place_cells and
+    followed by place_cells again (_place_again). Returns the lookups (for
+    mkmk).
 
-    The order is parent first, depth by depth, because HarfBuzz (15) takes
-    a mark's height from its base when it attaches it (and CoreText applies
-    attachments in lookup order): Xv first takes the line of its row from
-    the row's head (or from the box before it in the row), then the layers
-    of the box, their rows, the rows' left edges and E; place_cells then
-    puts Xv in its place across and every sign on its row."""
+    The order is parent first, because HarfBuzz (15) takes a mark's height
+    from its base when it attaches it, and CoreText its height and its
+    place across: place_cells puts Xv in its cell (and, not yet right, the
+    signs inside the box and the cell after it); then the layers of the
+    box hang from Xv, their rows from them, the rows' left edges from the
+    rows, E from Xv's right edge; place_cells again puts the signs inside
+    the box on their rows and the cell after the box after E. A box in a box
+    (depth 2) would need a round per depth."""
     lookups = []
     tops, bottoms = defaultdict(set), defaultdict(set)  # (depth, layer): {(name, y)}
     for final in set(nest.verticals().values()):  # _nVt<depth>.<layer>.<y> and _nVb...
@@ -1178,15 +1181,6 @@ def _gpos_nest(n, w, nest):
     for d in nest.depths:
         xvs = [(nest.xv(d, g, k), g, k) for g in nest.widths() for k in LEVELS]
         xv_names = [name for name, _, _ in xvs]
-        # the line of the row Xv stands in
-        if d == 1:
-            heads = [n.row(m, k) for k in LEVELS for m in n.cell_heights] + [n.last_row(k) for k in LEVELS]
-        else:
-            heads = [nest.row(d - 1, m, k) for m in nest.row_heights() for k in LEVELS] + [nest.last_row(d - 1)]
-        w.text.append(f"markClass {cls(xv_names)} <anchor 0 0> @nXv{d};")
-        w.lookup(f"n_line{d}", [f"pos mark {cls(heads + xv_names)} <anchor 0 0> mark @nXv{d}"],
-                 w.define(f"N_F_LINE{d}", heads + xv_names))
-        lookups.append(f"n_line{d}")
         for layer in (1, 2):
             for part, found in (("t", tops), ("b", bottoms)):
                 names = sorted(x for x, _ in found[(d, layer)])
@@ -1387,4 +1381,28 @@ def _gpos_side(n, w, sides):
 def side_categories(sides):
     found = {name: "mark" for name in sides.markers()}
     found.update({name: "base" for name in sides.candidates()})
+    return found
+
+
+PLACE_ROUNDS = 4  # boxes in one row that CoreText places right (HarfBuzz: any number)
+
+
+def _place_again(w, nested):
+    """After the box lookups (_gpos_nest), place_cells again, then the box
+    lookups and place_cells again, PLACE_ROUNDS times in all: each round
+    places one more box of a row for an engine that applies attachments in
+    lookup order (CoreText), because a box after a box hangs from the first
+    one's end, which only the box lookups place. The copies are the same
+    rules, so the compiler stores their subtables once. Returns the lookups."""
+    def copy(name, new):
+        first = w.text.index(f"lookup {name} {{")
+        last = w.text.index(f"}} {name};")
+        w.text += [f"lookup {new} {{", *w.text[first + 1:last], f"}} {new};"]
+        return new
+
+    found = []
+    for r in range(1, PLACE_ROUNDS + 1):
+        found.append(copy("place_cells", f"place_cells_{r}"))
+        if r < PLACE_ROUNDS:
+            found += [copy(name, f"{name}_{r}") for name in nested]
     return found

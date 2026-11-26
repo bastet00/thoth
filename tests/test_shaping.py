@@ -55,7 +55,7 @@ V, H = L.VERTICAL_JOINER, L.HORIZONTAL_JOINER
 FALLBACK = "control.fallback"
 
 # Limits for the budget test, set from the build with segments, overlay and
-# side insertion (14,778 glyphs, 1,483,068 bytes TTF, 500,896 bytes WOFF2;
+# side insertion (14,778 glyphs, 1,481,364 bytes TTF, 501,740 bytes WOFF2;
 # decision 014) with a little room. Before them: with the automatic layer,
 # its own-word table and the shape rule 12,604, 1,215,364 and 435,528;
 # without the shape rule 12,602, 1,213,596 and 434,888; without the layer
