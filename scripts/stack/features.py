@@ -49,8 +49,9 @@ delimiter drops its modifiers (_gsub_enclosure_modifiers()); last the
 modifiers are drawn on whatever glyph the sign has become
 (_gsub_modifiers_late()). In GPOS the base shift of rule E4 comes first,
 so that everything hanging from the base follows it; the boxes' lookups
-come right before place_cells (parent first, see _gpos_nest()); the
-shading comes last.
+come right after place_cells, and then place_cells and they again, in
+PLACE_ROUNDS rounds (parent first, for CoreText: see _gpos_nest() and
+_place_again()); the shading comes last.
 
 GPOS, features mark and mkmk: every glyph of a group hangs from one before
 it: V from Q (on the axis), each row from V or the row above, the last row
@@ -661,8 +662,8 @@ def add_features(font, names, automatic):
     modifiers_late = _gsub_modifiers_late(names, w)  # last: mirrors and shades what the above drew
     shift = _gpos_enclosure_first(names, w)  # first in the GPOS lookup list
     _gpos(names, w, nest_cells(nest))
-    nested = []  # the boxes' GPOS, parent first, right before place_cells
-    _splice(w, "place_cells", lambda part: nested.extend(_gpos_nest(names, part, nest)) or nested, table="gpos")
+    nested = _gpos_nest(names, w, nest)  # the boxes' GPOS, parent first, right after place_cells
+    nested += _place_again(w, nested)  # and place_cells again, PLACE_ROUNDS times
 
     def feature(tag, lookups, automatic=False):
         # ufo2ft puts the Latin mark rules at "# Automatic Code", for every
@@ -1199,15 +1200,18 @@ def _gsub_nest_level(n, w, nest):
 
 
 def _gpos_nest(n, w, nest):
-    """GPOS of segments and overlay, defined right before place_cells.
-    Returns the lookups (for mkmk).
+    """GPOS of segments and overlay, defined right after place_cells and
+    followed by place_cells again (_place_again). Returns the lookups (for
+    mkmk).
 
-    The order is parent first, depth by depth, because HarfBuzz (15) takes
-    a mark's height from its base when it attaches it (and CoreText applies
-    attachments in lookup order): Xv first takes the line of its row from
-    the row's head (or from the box before it in the row), then the layers
-    of the box, their rows, the rows' left edges and E; place_cells then
-    puts Xv in its place across and every sign on its row."""
+    The order is parent first, because HarfBuzz (15) takes a mark's height
+    from its base when it attaches it, and CoreText its height and its
+    place across: place_cells puts Xv in its cell (and, not yet right, the
+    signs inside the box and the cell after it); then the layers of the
+    box hang from Xv, their rows from them, the rows' left edges from the
+    rows, E from Xv's right edge; place_cells again puts the signs inside
+    the box on their rows and the cell after the box after E. A box in a box
+    (depth 2) would need a round per depth."""
     lookups = []
     tops, bottoms = defaultdict(set), defaultdict(set)  # (depth, layer): {(name, y)}
     for final in set(nest.verticals().values()):  # _nVt<depth>.<layer>.<y> and _nVb...
@@ -1216,15 +1220,6 @@ def _gpos_nest(n, w, nest):
     for d in nest.depths:
         xvs = [(nest.xv(d, g, k), g, k) for g in nest.widths() for k in LEVELS]
         xv_names = [name for name, _, _ in xvs]
-        # the line of the row Xv stands in
-        if d == 1:
-            heads = [n.row(m, k) for k in LEVELS for m in n.cell_heights] + [n.last_row(k) for k in LEVELS]
-        else:
-            heads = [nest.row(d - 1, m, k) for m in nest.row_heights() for k in LEVELS] + [nest.last_row(d - 1)]
-        w.text.append(f"markClass {cls(xv_names)} <anchor 0 0> @nXv{d};")
-        w.lookup(f"n_line{d}", [f"pos mark {cls(heads + xv_names)} <anchor 0 0> mark @nXv{d}"],
-                 w.define(f"N_F_LINE{d}", heads + xv_names))
-        lookups.append(f"n_line{d}")
         for layer in (1, 2):
             for part, found in (("t", tops), ("b", bottoms)):
                 names = sorted(x for x, _ in found[(d, layer)])
@@ -1429,6 +1424,30 @@ def side_categories(sides):
     return found
 
 
+PLACE_ROUNDS = 4  # boxes in one row that CoreText places right (HarfBuzz: any number)
+
+
+def _place_again(w, nested):
+    """After the box lookups (_gpos_nest), place_cells again, then the box
+    lookups and place_cells again, PLACE_ROUNDS times in all: each round
+    places one more box of a row for an engine that applies attachments in
+    lookup order (CoreText), because a box after a box hangs from the first
+    one's end, which only the box lookups place. The copies are the same
+    rules, so the compiler stores their subtables once. Returns the lookups."""
+    def copy(name, new):
+        first = w.text.index(f"lookup {name} {{")
+        last = w.text.index(f"}} {name};")
+        w.text += [f"lookup {new} {{", *w.text[first + 1:last], f"}} {new};"]
+        return new
+
+    found = []
+    for r in range(1, PLACE_ROUNDS + 1):
+        found.append(copy("place_cells", f"place_cells_{r}"))
+        if r < PLACE_ROUNDS:
+            found += [copy(name, f"{name}_{r}") for name in nested]
+    return found
+
+
 # --- Enclosures (layout section 10) -------------------------------------------
 
 def _enclosure_boxes(n):
@@ -1624,28 +1643,30 @@ def _gpos_enclosure_first(n, w):
     an enclosure moves up (or down) by its lift, before anything hangs
     from it. Placed first, the marks of the block follow it in every
     engine tried; placed after the mark attachment, HarfBuzz 12.3.2 moves
-    the marks with it and HarfBuzz 15.0 does not."""
+    the marks with it and HarfBuzz 15.0 does not. Then the variant of a
+    lone sign hangs from its spacer at the centre of the bottom of its
+    cell: placed before the chains of the groups (place_cells and its
+    rounds), so that CoreText, which takes a mark's place when it attaches
+    it, has it in place when a box after it is placed."""
     e = n.enclosures
     good = cls(e.state("ok", k) for k in e.kinds)
     moved = {g: move for g, (move, *_) in e.moved.items()}
     moved.update({_mirrored_of(n)[g]: move for g, move in list(moved.items()) if g in _mirrored_of(n)})  # rule M4
     w.lookup("enc_move", [f"pos {g} <0 {move} 0 0>" for g, move in sorted(moved.items())])
     w.lookup("enc_shift", [f"pos {cls(sorted(moved))}' lookup enc_move {good}"])
-    return ["enc_shift"]
-
-
-def _gpos_enclosure(n, w):
-    """Rules E4 and E6: the variant of a lone sign hangs from its spacer at
-    the centre of the bottom of its cell; the line pieces hang from the
-    base of their cluster by its start, its end and its middle, less the
-    lift of a moved base, which they would otherwise follow. Returns the
-    lookups, for feature mark."""
-    e = n.enclosures
     cell = [g for c in sorted(n.signs) for g in [n.variant(c, 0)] + n.modifiers.mirrored_variants(c, 0)]
     w.text.append(f"markClass {cls(cell)} <anchor 0 0> @E_CELL;")  # also mirrored (rule M4)
     rules = [f"pos base {e.spacer(cell)} <anchor {L.centre(cell[0], L.half_unit(0))} "
              f"{L.span(1, cell[1], L.UNIT)[1]}> mark @E_CELL" for cell in e.cells]
     w.lookup("enc_place_cell", rules)
+    return ["enc_shift", "enc_place_cell"]
+
+
+def _gpos_enclosure(n, w):
+    """Rule E6: the line pieces hang from the base of their cluster by its
+    start, its end and its middle, less the lift of a moved base, which
+    they would otherwise follow. Returns the lookups, for feature mark."""
+    e = n.enclosures
     starts = [e.line(k, m, "start") for k in e.kinds for m in L.SEGMENTS]
     ends = [e.line(k, m, "end") for k in e.kinds for m in L.SEGMENTS]
     w.text += [f"markClass {cls(starts)} <anchor 0 0> @E_START;", f"markClass {cls(ends)} <anchor 0 0> @E_END;",
@@ -1656,7 +1677,7 @@ def _gpos_enclosure(n, w):
             rules.append(f"pos base {glyph} <anchor 0 {-lift}> mark @E_START <anchor {width} {-lift}> mark @E_END "
                          f"<anchor {width // 2} {-lift}> mark @E_MERLONS")
     w.lookup("enc_place_lines", rules)
-    return ["enc_place_cell", "enc_place_lines"]
+    return ["enc_place_lines"]
 
 
 # --- Enclosures and sign modifiers together (layout sections 10 and 11) ------

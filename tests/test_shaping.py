@@ -56,7 +56,8 @@ V, H = L.VERTICAL_JOINER, L.HORIZONTAL_JOINER
 FALLBACK = "control.fallback"
 
 # Limits for the budget test, set from the build with every control (20,099
-# glyphs, 1,900,096 bytes TTF, 589,772 bytes WOFF2) with a little room. Its
+# glyphs, 1,903,636 bytes TTF, 589,584 to 590,480 bytes WOFF2, which vary
+# with the build time) with a little room. Its
 # parts, each built alone on the base (d0898e3: 12,604 glyphs, 1,215,364
 # bytes TTF, 435,736 bytes WOFF2): enclosures (section 10) +264 glyphs and
 # about 70 KB TTF, sign modifiers (section 11) +5,057 and about 333 KB,
