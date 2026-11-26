@@ -55,6 +55,11 @@ The rules, each stated once:
     controls of a table of known sign sequences were there, and two
     half-block signs in a row (low and wide) stack one above the other
     (section 7, rules A1 to A9). Explicit controls always win.
+12. A bracketed column (begin and end segment) is one member of a row, and
+    an overlay draws two signs or flat groups across each other in one
+    cell (section 8, rules N1 to N5).
+13. A sign, an insertion control for the middle, top or bottom, and a sign
+    put the second sign into the first (section 9, rules S1 to S5).
 
 Rounding. The font can only add whole numbers that its glyphs carry, so
 every position here is such a sum, rounded as the font rounds it: a unit
@@ -68,6 +73,7 @@ and this file therefore agree exactly. Only the outline of a scaled
 component may differ from ink_box(), by its own rounding: at most 2.
 """
 
+import bisect
 import math
 import re
 import unicodedata
@@ -198,8 +204,8 @@ def sign_table(font):
         box = boxes[BLANK_BOX.get(codepoint, codepoint)]
         cell = sign_cell(box)
         scales = tuple(sign_scale(box, cell, level) for level in range(len(LEVEL_HEIGHTS)))
-        table[codepoint] = Sign(glyph.name, glyph.width, box, cell, scales,
-                                sign_lift(box, cell), sign_corners(font, glyph, box, codepoint))
+        corners = {**sign_corners(font, glyph, box, codepoint), **sign_sides(font, glyph, box)}  # sections 6, 9
+        table[codepoint] = Sign(glyph.name, glyph.width, box, cell, scales, sign_lift(box, cell), corners)
     return table
 
 
@@ -355,6 +361,12 @@ def layout(codepoints, signs, table=None):
     clusters = []
     for start, end in runs(codepoints):
         run = codepoints[start:end]
+        if any(c in NESTING for c in run):  # section 8
+            clusters += _nested(start, end, run, signs)
+            continue
+        if is_side_insertion(run):  # section 9
+            clusters.append(_side_inserted(start, end, run, signs))
+            continue
         if is_insertion(run):  # section 6
             clusters.append(_inserted(start, end, run, signs))
             continue
@@ -1047,3 +1059,540 @@ def automatic(codepoints, table, signs=None):
             text.append(control)
             origin.append(i)
     return text, origin
+
+
+# --- 8. Segments and overlay ------------------------------------------------
+#
+# The controls U+13437 BEGIN SEGMENT and U+13438 END SEGMENT, written ( and )
+# below, put a vertical group into a row as one of its members, and U+13436
+# OVERLAY MIDDLE, written +, draws two signs or flat groups across each
+# other. The syntax is that of L2/21-248, table 1 (unchanged by table 3 for
+# these controls):
+#
+#     horizontal_group ::= hor_subgroup ("*" hor_subgroup)+
+#     hor_subgroup     ::= "(" vertical_group ")" | basic_group
+#     vertical_group   ::= ver_subgroup (":" ver_subgroup)+
+#     ver_subgroup     ::= horizontal_group | basic_group
+#     basic_group      ::= core_group | ...
+#     core_group       ::= flat_hor_group "+" flat_ver_group | sign
+#     flat_hor_group   ::= "(" sign ("*" sign)+ ")" | sign
+#     flat_ver_group   ::= "(" sign (":" sign)+ ")" | sign
+#
+# So a bracketed group is always a column of two rows or more standing in a
+# row of two members or more ("(A : B)" alone, "(A * B)" as a member, or a
+# bracketed group as a whole row of a column are not well formed), and an
+# overlay is one basic group: A + B * C is (A + B) * C.
+#
+# The rules, each stated once:
+#
+# N1. A box is a bracketed column (a segment) or an overlay. It is one cell
+#     of the row it stands in, as large as its content at full size: a
+#     segment as wide as its widest row and as high as its rows together,
+#     an overlay as wide and as high as the larger of its two operands (a
+#     flat row: its cells side by side; a flat column: one above the other).
+#     The whole group is then drawn at one level (rules 3 and 4), so the
+#     signs in a box are as large as those beside it.
+# N2. A box is at most BOX_LIMIT (one quadrat: 28 half units by 12 units) at
+#     full size, and boxes nest at most MAX_DEPTH deep (an overlay counts as
+#     a box). Any other run with these controls, or one with a corner or side
+#     insertion control, is drawn unstacked (rule 9).
+# N3. A segment is laid out by the rules of a group (6 and 7) in its slot:
+#     as wide as the box and as high as the row it stands in. Its rows are
+#     centred on the box's axis, a row of two with little slack justified to
+#     the box's edges; two rows share the free height of the slot as two
+#     rows share the quadrat (each kept a quarter of it plus GAP from its
+#     edge, rule 7), three or more are packed and centred. So p over t
+#     beside the tall h of Ptah take half the height each, as f and r do
+#     beside nfr's tall sign.
+# N4. The two operands of an overlay are centred on each other: each is
+#     centred on the box's axis and in the box's height, its rows packed.
+#     Both stand in the same cell, so they cross; that is what the control
+#     asks for. The box stands on its row's line like a sign.
+# N5. The text order of the signs is their drawing order; a box is one
+#     cluster with the rest of its group.
+
+SEGMENT_START, SEGMENT_END, OVERLAY = 0x13437, 0x13438, 0x13436
+NESTING = (SEGMENT_START, SEGMENT_END, OVERLAY)
+MAX_DEPTH = 1  # how deep boxes nest: 1, a box in the group; 2, also a box in a box
+BOX_LIMIT = (WIDTH_LIMIT, HEIGHT_LIMIT)  # half units, units: one quadrat
+
+# Why these values. One level of boxes covers Ptah and the segments and
+# overlays of common words; the generator builds any depth, and depth 2 (a
+# segment or overlay inside a segment, as in the last example of Unicode's
+# figure 11-5) passes the same tests but adds about 52 KB to the font, which
+# with the rest of section 9 would pass the 300 KB budget (decision 014).
+# A box at most one quadrat: the cell classes of the flat stages end there.
+
+# kind: "segment" or "overlay"; layers: the rows of its content, a tuple of
+# rows of members (sign or Box); a segment has one layer, an overlay two.
+Box = namedtuple("Box", "kind layers")
+
+
+class _Malformed(Exception):
+    pass
+
+
+def parse_nested(run):
+    """Rule N2 and the syntax above: the group a run with segment or overlay
+    controls spells (rows of members, a member a sign or a Box), or None."""
+    def peek(k=0):
+        return run[at[0] + k] if at[0] + k < len(run) else None
+
+    def take(expected=None):
+        c = peek()
+        if c is None or (expected is not None and c != expected) or (expected is None and not is_sign(c)):
+            raise _Malformed
+        at[0] += 1
+        return c
+
+    def group(depth):
+        rows = [row(depth)]
+        while peek() == VERTICAL_JOINER:
+            take(VERTICAL_JOINER)
+            rows.append(row(depth))
+        return tuple(rows)
+
+    def row(depth):
+        members = [member(depth)]
+        while peek() == HORIZONTAL_JOINER:
+            take(HORIZONTAL_JOINER)
+            members.append(member(depth))
+        if len(members) == 1 and isinstance(members[0], Box) and members[0].kind == "segment":
+            raise _Malformed  # a segment is a member of a row of two or more
+        return tuple(members)
+
+    def flat_left():  # ( sign (* sign)+ ) followed by +
+        k, signs = 1, 1
+        if peek() != SEGMENT_START or not is_sign(peek(1) or 0):
+            return False
+        while peek(k + 1) == HORIZONTAL_JOINER and is_sign(peek(k + 2) or 0):
+            k, signs = k + 2, signs + 1
+        return signs > 1 and peek(k + 1) == SEGMENT_END and peek(k + 2) == OVERLAY
+
+    def member(depth):
+        c = peek()
+        if c is not None and is_sign(c) and peek(1) != OVERLAY:
+            return take()
+        if (c is not None and is_sign(c)) or flat_left():
+            return overlay(depth)
+        take(SEGMENT_START)
+        if depth + 1 > MAX_DEPTH:
+            raise _Malformed
+        inner = group(depth + 1)
+        take(SEGMENT_END)
+        if len(inner) < 2:
+            raise _Malformed  # a segment is a vertical group
+        return Box("segment", (inner,))
+
+    def operand(joiner):
+        if peek() != SEGMENT_START:
+            return (take(),)
+        take(SEGMENT_START)
+        found = [take()]
+        while peek() == joiner:
+            take(joiner)
+            found.append(take())
+        take(SEGMENT_END)
+        if len(found) < 2:
+            raise _Malformed
+        return tuple(found)
+
+    def overlay(depth):
+        if depth + 1 > MAX_DEPTH:
+            raise _Malformed
+        left = (operand(HORIZONTAL_JOINER),)  # one row
+        take(OVERLAY)
+        right = tuple((c,) for c in operand(VERTICAL_JOINER))  # rows of one sign
+        if peek() == OVERLAY:
+            raise _Malformed
+        return Box("overlay", (left, right))
+
+    if not any(c in NESTING for c in run):
+        return None
+    at = [0]
+    try:
+        found = group(0)
+    except _Malformed:
+        return None
+    return found if at[0] == len(run) else None
+
+
+def cell_of(member, signs):
+    """Rule N1: the cell of a member, (width in half units, height in units)."""
+    if not isinstance(member, Box):
+        return signs[member].cell
+    sizes = [_rows_size(rows, signs)[:2] for rows in member.layers]
+    return max(w for w, _ in sizes), max(h for _, h in sizes)
+
+
+def _rows_size(rows, signs):
+    """(width, height, [(width, height) of each row]) of rows of members."""
+    found = []
+    for row in rows:
+        cells = [cell_of(member, signs) for member in row]
+        found.append((sum(c[0] for c in cells), max(c[1] for c in cells)))
+    return max(r[0] for r in found), sum(r[1] for r in found), found
+
+
+def boxes_fit(group, signs):
+    """Rule N2: every box of the group is at most BOX_LIMIT."""
+    for row in group:
+        for member in row:
+            if isinstance(member, Box):
+                width, height = cell_of(member, signs)
+                if width > BOX_LIMIT[0] or height > BOX_LIMIT[1]:
+                    return False
+                if not all(boxes_fit(layer, signs) for layer in member.layers):
+                    return False
+    return True
+
+
+def segment_span(count, height, slot, step):
+    """Rule N3: (top, bottom) of a segment of `count` rows `height` units
+    high, in a slot `slot` units high, from the slot's bottom."""
+    spare = (slot - height) * step
+    if count == 2:
+        margin = min((spare + GAP) // 4, spare // 2)
+        return slot * step - margin, margin
+    return slot * step - spare // 2, spare - spare // 2
+
+
+def overlay_span(height, box_height, step):
+    """Rule N4: (top, bottom) of an operand `height` units high in a box
+    `box_height` units high, from the box's bottom."""
+    bottom = half(box_height - height, step)
+    return bottom + height * step, bottom
+
+
+def _nested(start, end, run, signs):
+    """Rules N1 to N5 for a run with segment or overlay controls."""
+    group = parse_nested(run)
+    level = None
+    if group is not None and boxes_fit(group, signs):
+        level = fit_level(*_rows_size(group, signs)[:2])
+    if level is None:
+        return [_unstacked(start + i, c, signs) for i, c in enumerate(run)]
+    width, height, rows = _rows_size(group, signs)
+    step, up = half_unit(level), unit(level)
+    glyphs = []
+    for row, (row_width, row_height), line in zip(group, rows, _lines(rows, height, up)):
+        free = slack(row, width, row_width)
+        x = centre(width, step) - half(width if free else row_width, step)
+        _place_row(glyphs, row, x, line, free, row_height, level, signs)
+    return [Cluster(start, end, advance(width, step), tuple(glyphs), True)]
+
+
+def _place_row(glyphs, row, x, line, free, slot, level, signs):
+    """Cells side by side from x on `line`; a box gets the row's height."""
+    step = half_unit(level)
+    for index, member in enumerate(row):
+        x += free * step * (index == 1)
+        width = cell_of(member, signs)[0]
+        if isinstance(member, Box):
+            _place_box(glyphs, member, x + half(width, step), line, slot, level, signs)
+        else:
+            sign = signs[member]
+            dx, dy = sign_offset(sign, level)
+            glyphs.append(Glyph(member, x + half(width, step) + dx, line + dy, level, sign.scales[level]))
+        x += width * step
+
+
+def _place_box(glyphs, box, axis, line, slot, level, signs):
+    """Rules N3 and N4: a box whose cell is centred on `axis`, on `line`."""
+    step, up = half_unit(level), unit(level)
+    box_width, box_height = cell_of(box, signs)
+    for rows in box.layers:
+        width, height, sizes = _rows_size(rows, signs)
+        if box.kind == "segment":
+            top, bottom = segment_span(len(rows), height, slot, up)
+        else:
+            top, bottom = overlay_span(height, box_height, up)
+        lines = []
+        for _, row_height in sizes[:-1]:
+            top -= row_height * up
+            lines.append(top)
+        lines.append(bottom)
+        for row, (row_width, row_height), y in zip(rows, sizes, lines):
+            free = slack(row, box_width, row_width) if box.kind == "segment" else 0
+            x = axis - half(box_width if free else row_width, step)
+            _place_row(glyphs, row, x, line + y, free, row_height, level, signs)
+
+
+# --- 9. Insertion at middle, top and bottom ---------------------------------
+#
+# U+13439 INSERT AT MIDDLE puts the sign after it "in the middle of" the
+# sign before it, U+1343A INSERT AT TOP into an opening at its top and
+# U+1343B INSERT AT BOTTOM into an opening at its bottom (Unicode core
+# specification, chapter 11, figure 11-2; L2/21-248, section 2). Same
+# machinery as the corner insertions (section 6); what differs:
+#
+# S1. A run that is exactly a sign, one of these controls and a sign is an
+#     insertion, one block with the advance of the base (rule I1). Every
+#     other use is drawn unstacked.
+# S2. The zone is centred across on the middle of the base's ink box. Top:
+#     the free rectangle from the top of the ink box down; bottom: from its
+#     bottom up (the strips of rule I2, widened two at a time from the
+#     middle); middle: the free rectangle around the centre of the ink box,
+#     inside the outline (measured on horizontal lines every LINE units, so
+#     the inside of a closed shape counts as free). A zone keeps GAP from
+#     the ink and is counted in whole STEPs; it has no quarter-block cap: the
+#     base itself bounds it. The largest box of the inserted sign's shape
+#     decides between zones, as in rule I2.
+# S3. In the middle any sign can be inserted, down to level 6 (MIDDLE_LEVELS);
+#     at top and bottom a small one (rule I3's INSERT_CELL), down to level 5
+#     (INSERT_LEVELS), as in a corner. It takes the largest of its levels at
+#     which its ink fits the zone (sizes as in rule I3). No sign shrinks. A
+#     middle zone smaller than MIDDLE_ZONE STEPs either way is no zone.
+# S4. Top: the inserted sign stands GAP above the highest ink under it (rule
+#     I5); bottom: on the base's line; middle: its ink centred on the zone's
+#     centre, its height counted in whole STEPs (so up to half a STEP low).
+# S5. No zone, or no fit: the control is a horizontal joiner (rule I6).
+
+MIDDLE_INSERT, TOP_INSERT, BOTTOM_INSERT = 0x13439, 0x1343A, 0x1343B
+SIDES = (MIDDLE_INSERT, TOP_INSERT, BOTTOM_INSERT)
+MIDDLE_LEVELS = (2, 3, 4, 5, 6)
+SIDE_LEVELS = MIDDLE_LEVELS  # every level a side insertion can draw a sign at
+LINE = 10  # the distance of the lines on which an inside is measured
+MIDDLE_ZONE = 4  # STEPs: the least room, either way, that the middle offers
+
+# Why these values. Signs inserted in the middle are often whole signs (the
+# flag of netjer in the house O6 needs a third of its size, level 6), so
+# the middle takes any sign down to level 6; a top or bottom opening takes
+# what the corners take. A smaller middle zone (the hollow stroke of an
+# outline, a gap of a hand's width) would take only a dot; leaving those out
+# saves a third of the font's anchors for the middle, and seats in whole
+# STEPs, not half, save a third again (decision 014: about 300 KB budget).
+
+
+def is_side_insertion(run):
+    """Rule S1: a sign, a side control, a sign, and nothing else."""
+    return len(run) == 3 and run[1] in SIDES and is_sign(run[0]) and is_sign(run[2])
+
+
+class _Lines(BasePen):
+    """The ink of an outline on horizontal lines: {y: [(x0, x1)]} (nonzero)."""
+
+    def __init__(self, glyphset, ys):
+        super().__init__(glyphset)
+        self.ys, self.edges, self.start = ys, [], None
+
+    def _moveTo(self, point):
+        self.start = self.point = point
+
+    def _lineTo(self, point):
+        self.edges.append((self.point, point))
+        self.point = point
+
+    def _curveToOne(self, a, b, c):
+        p = self.point
+        for i in range(1, 17):
+            t, u = i / 16, 1 - i / 16
+            self._lineTo(tuple(u ** 3 * p[n] + 3 * u * u * t * a[n] + 3 * u * t * t * b[n] + t ** 3 * c[n]
+                               for n in (0, 1)))
+
+    def _qCurveToOne(self, a, b):
+        p = self.point
+        for i in range(1, 9):
+            t, u = i / 8, 1 - i / 8
+            self._lineTo(tuple(u * u * p[n] + 2 * u * t * a[n] + t * t * b[n] for n in (0, 1)))
+
+    def _closePath(self):
+        if self.point != self.start:
+            self._lineTo(self.start)
+
+    def ink(self):
+        count = len(self.ys)  # self.ys is sorted
+        crossings = [[] for _ in range(count)]
+        for (x0, y0), (x1, y1) in self.edges:
+            if y0 == y1:
+                continue
+            low, high = min(y0, y1), max(y0, y1)
+            for i in range(bisect.bisect_left(self.ys, low), count):
+                y = self.ys[i]
+                if y >= high:
+                    break
+                crossings[i].append((x0 + (y - y0) * (x1 - x0) / (y1 - y0), 1 if y1 > y0 else -1))
+        found = {}
+        for y, row in zip(self.ys, crossings):
+            row.sort()
+            intervals, winding, begin = [], 0, None
+            for x, direction in row:
+                before, winding = winding, winding + direction
+                if before == 0 and winding != 0:
+                    begin = x
+                elif before != 0 and winding == 0:
+                    intervals.append((begin, x))
+            found[y] = intervals
+        return found
+
+
+def sign_sides(font, glyph, box):
+    """Rules S2 and S4: {control: ({shape: Zone},)} for the side controls,
+    in the form of Sign.corners (one entry: no shrunk levels)."""
+    frame = box
+    high, low = _envelope(font, glyph, frame, (1, 0, 0))
+    found = {TOP_INSERT: _side_zones(high, frame, True), BOTTOM_INSERT: _side_zones(low, frame, False)}
+    ys = [frame[1] + LINE / 2 + LINE * i for i in range(math.ceil((frame[3] - frame[1]) / LINE))]
+    pen = _Lines(font, ys)
+    glyph.draw(pen)
+    found[MIDDLE_INSERT] = _middle_zones(pen.ink(), frame)
+    return {control: (zones,) for control, zones in found.items()}
+
+
+def _best(candidates, ratio):
+    """Rule S2: of (width, height, ...) in STEPs, the one holding the largest
+    box of the shape, the larger of equals."""
+    best, best_key = None, None
+    for candidate in candidates:
+        zw, zh = candidate[:2]
+        if zw <= 0 or zh <= 0:
+            continue
+        key = (min(zw / ratio[0], zh / ratio[1]), zw * zh)
+        if best_key is None or key > best_key:
+            best, best_key = candidate, key
+    return best
+
+
+def _side_zones(envelope, frame, top):
+    """Rules S2 and S4 for top or bottom: {shape: Zone}."""
+    x_min, y_min, x_max, y_top = frame
+    count, centre_x = len(envelope), (x_min + x_max) / 2
+    if top:
+        ink = [y_min - GAP if y == -math.inf else y for y in envelope]
+        free = [y_top - y for y in ink]
+    else:
+        ink = [y_top + GAP if y == math.inf else y for y in envelope]
+        free = [y - y_min for y in ink]
+    middle = int((centre_x - x_min) // STRIP)
+    candidates = []
+    for reach in range(count):  # strips middle - reach .. middle + reach
+        first, last = max(0, middle - reach), min(count - 1, middle + reach)
+        depth = min(free[first:last + 1])
+        if depth <= GAP:
+            break
+        left, right = x_min + first * STRIP, min(x_max, x_min + (last + 1) * STRIP)
+        half_width = min(centre_x - left, right - centre_x)  # symmetric about the middle
+        sides = (GAP if left > x_min else 0) + (GAP if right < x_max else 0)
+        candidates.append((int((2 * half_width - sides) // STEP), int((depth - GAP) // STEP), depth))
+        if first == 0 and last == count - 1:
+            break
+    zones = {}
+    for shape, ratio in SHAPES.items():
+        best = _best(candidates, ratio)
+        if best is None:
+            zones[shape] = NO_ZONE
+            continue
+        zw, zh, depth = best
+        x = _round(centre_x)
+        if not top:
+            zones[shape] = Zone(zw, zh, x, y_min, (y_min,) * ((zw + 1) // 2))
+            continue
+
+        def seat(n):  # GAP above the highest ink under n STEPs, widened by GAP
+            left, right = x - n * STEP / 2 - GAP, x + n * STEP / 2 + GAP
+            under = [ink[s] for s in range(count)
+                     if x_min + (s + 1) * STRIP > left and x_min + s * STRIP < right]
+            return math.ceil(max(under, default=y_min - GAP)) + GAP
+
+        seats = tuple(seat(min(2 * units, zw)) for units in range(1, (zw + 1) // 2 + 1))
+        zones[shape] = Zone(zw, zh, x, math.ceil(y_top - depth) + GAP, seats)
+    return zones
+
+
+def _middle_zones(lines, frame):
+    """Rules S2 and S4 for the middle: {shape: Zone}, the free rectangle
+    around the centre of the ink box (measured on the lines); its anchor is
+    its own centre; seats by the inserted sign's height in half STEPs."""
+    x_min, y_min, x_max, y_top = frame
+    cx, cy = (x_min + x_max) / 2, (y_min + y_top) / 2
+    ys = sorted(lines)
+
+    def free(y):  # the free stretch of line y around cx, or None
+        intervals = lines[y]
+        if any(a <= cx <= b for a, b in intervals):
+            return None
+        return (max([b for a, b in intervals if b < cx], default=x_min - GAP),
+                min([a for a, b in intervals if a > cx], default=x_max + GAP))
+
+    stretches = [free(y) for y in ys]
+    middle = min(range(len(ys)), key=lambda i: abs(ys[i] - cy))
+    candidates = []
+    for low in range(middle, -1, -1):
+        if stretches[low] is None:
+            break
+        left, right = -math.inf, math.inf
+        for i in range(low, len(ys)):
+            if stretches[i] is None:
+                break
+            left, right = max(left, stretches[i][0]), min(right, stretches[i][1])
+            if i < middle:
+                continue
+            bottom = ys[low] + GAP if low else y_min  # the lines reach the frame: no ink beyond
+            top = ys[i] - GAP if i < len(ys) - 1 else y_top
+            x0, x1 = left + GAP, right - GAP
+            if x1 - x0 >= MIDDLE_ZONE * STEP and top - bottom >= MIDDLE_ZONE * STEP:
+                candidates.append((int((x1 - x0) // STEP), int((top - bottom) // STEP),
+                                   (x0 + x1) / 2, (bottom + top) / 2))
+    zones = {}
+    for shape, ratio in SHAPES.items():
+        best = _best(candidates, ratio)
+        if best is None:
+            zones[shape] = NO_ZONE
+            continue
+        zw, zh, x, y = best
+        # seats: the bottom of an inserted sign n STEPs high
+        seats = tuple(_round(y - n * STEP / 2) for n in range(1, zh + 1))
+        zones[shape] = Zone(zw, zh, _round(x), _round(y), seats)
+    return zones
+
+
+def side_size(sign, level):
+    """Rule S3: the size class of an inserted sign at a level, as rule I3."""
+    return insert_size(sign, level)
+
+
+def side_seat(control, sign, level):
+    """Rule S4: which seat of the zone the inserted sign takes (1, 2, ...):
+    its width in whole units at top and bottom, its height in STEPs in the
+    middle."""
+    if control == MIDDLE_INSERT:
+        return insert_size(sign, level)[1]
+    return seat_width(insert_size(sign, level))
+
+
+def side_insertable(control, sign):
+    """Rule S3: any sign in the middle, a small one at top and bottom."""
+    return control == MIDDLE_INSERT or insertable(sign)
+
+
+def side_levels(control):
+    """Rule S3: the levels a control can draw its sign at, largest first."""
+    return MIDDLE_LEVELS if control == MIDDLE_INSERT else INSERT_LEVELS
+
+
+def side_insertion(base, control, inserted, signs):
+    """Rules S3 and S5: the level of the inserted sign, or None."""
+    sign = signs[inserted]
+    if not side_insertable(control, sign):
+        return None
+    zone = signs[base].corners[control][0][shape_of(sign)]
+    for level in side_levels(control):
+        width, height = side_size(sign, level)
+        if width <= zone.width and height <= zone.height:
+            return level
+    return None
+
+
+def _side_inserted(start, end, run, signs):
+    """Rules S1 to S5: the block of a side insertion."""
+    base, control, inserted = run
+    level = side_insertion(base, control, inserted, signs)
+    if level is None:  # S5
+        group = ((base, inserted),)
+        return _stacked(start, end, group, fit_level(*measure(group, signs)[:2]), signs)
+    b, sign = signs[base], signs[inserted]
+    zone = b.corners[control][0][shape_of(sign)]
+    dx, dy = sign_offset(sign, level)
+    seat = zone.seats[side_seat(control, sign, level) - 1]
+    glyph = Glyph(inserted, zone.x + dx, b.lift + seat + dy, level, sign.scales[level])
+    return Cluster(start, end, b.advance, (Glyph(base, 0, b.lift, 0, 1.0), glyph), True)

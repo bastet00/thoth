@@ -136,7 +136,7 @@ MALFORMED = [
     [V], [V, N35], [H, A1, A1], [X1, V, N35, V], [X1, V, V, N35], [X1, V, V, N35, A1],
     [X1, V, H, N35], [X1, V, 0x20, N35], [X1, 0x200D, V, N35],
     [SEGMENT, X1, V, N35], [X1, V, N35, END], [SEGMENT, X1, V, N35, END],
-    [M17, H, SEGMENT, X1, V, N35, V, A1], [X1, OVERLAY, O1, N35], [A1, INSERT, O1, V, X1],
+    [M17, H, SEGMENT, X1, V, N35, V, A1], [X1, OVERLAY, OVERLAY, O1, N35], [A1, INSERT, O1, V, X1],
     [A1, MIRROR], [I9, V, N35, V, 0x13113, 0x13433, A1], [*range(0x13430, 0x13441)],
     [A1, V, A1, V, A1, V, A1],  # 48 units high: over the cap
     [N35, H, N35, H, N35],  # 78 half units wide: over the cap
@@ -215,6 +215,8 @@ def check_visible(codepoints, signs):
         check(cluster.advance > 0, f"{name}: a cluster has no advance")
         if inserted(codepoints, cluster, signs):
             check_inserted(name, codepoints[cluster.start:cluster.end], cluster, signs)
+        elif side_inserted(codepoints, cluster, signs):
+            check_side_inserted(name, codepoints[cluster.start:cluster.end], cluster, signs)
         elif cluster.stacked:
             check(all(pen <= ink[0] and ink[2] <= pen + cluster.advance for ink in inks),
                   f"{name}: a sign leaves the advance of its group")
@@ -227,8 +229,9 @@ def check_visible(codepoints, signs):
                   f"{name}: a group is closer to its neighbour than the side bearing")
             check(all(-1 <= ink[1] and ink[3] <= TOP - L.GAP + 2 for ink in inks),
                   f"{name}: a group leaves the quadrat")
+            crossing = overlay_pairs(codepoints, cluster)  # an overlay's operands cross on purpose
             pairs = [(g, a, h, b) for i, (g, a) in enumerate(zip(cluster.glyphs, inks))
-                     for h, b in zip(cluster.glyphs[:i], inks[:i])]
+                     for j, (h, b) in enumerate(zip(cluster.glyphs[:i], inks[:i])) if (j, i) not in crossing]
             check(all(apart(a, b) >= L.GAP - 2 for g, a, h, b in pairs  # 2 for rounding
                       if not (at_floor(g, signs) or at_floor(h, signs))),
                   f"{name}: two signs of a group are closer than the gap")
@@ -241,10 +244,13 @@ def check_visible(codepoints, signs):
         return not cluster.stacked and sign and not 0 <= sign.box[0] <= sign.box[2] <= sign.advance
     # an inserted sign is inside its base's box: check_inserted() keeps it
     # off the base's ink; here it is checked against everything else
-    every = [(ink, overhangs(cluster, glyph), (n, inserted(codepoints, cluster, signs)))
-             for n, (cluster, inks) in enumerate(laid) for glyph, ink in zip(cluster.glyphs, inks)]
-    check(all(apart(a, b) > 0 for i, (a, one, (n, ins)) in enumerate(every)
-              for b, other, (m, _) in every[:i] if not (one or other or (ins and n == m))),
+    every = [(ink, overhangs(cluster, glyph), (n, inserted(codepoints, cluster, signs)
+                                               or side_inserted(codepoints, cluster, signs), k))
+             for n, (cluster, inks) in enumerate(laid) for k, (glyph, ink) in enumerate(zip(cluster.glyphs, inks))]
+    crossing = {(n, pair) for n, (cluster, _) in enumerate(laid) for pair in overlay_pairs(codepoints, cluster)}
+    check(all(apart(a, b) > 0 for i, (a, one, (n, ins, k)) in enumerate(every)
+              for b, other, (m, _, j) in every[:i]
+              if not (one or other or (ins and n == m) or (n == m and (n, (j, k)) in crossing))),
           f"{name}: two glyphs overlap")
 
 
@@ -832,11 +838,285 @@ def test_automatic(signs):
           f"{len(AUTOMATIC)} golden texts; shape rule: {len(half)} half-block signs, {pairs} pairs in random text")
 
 
+# --- segments and overlay (layout section 8) --------------------------------
+
+SB, SE, OV = L.SEGMENT_START, L.SEGMENT_END, L.OVERLAY
+G17, D36, G20, V28, A40 = 0x13153, 0x1309D, 0x13156, 0x1339B, 0x1302D
+
+
+def box_layers(tree):
+    """[(glyph indices of the first operand, of the second)] of each overlay
+    of a parsed group, glyphs counted in text order."""
+    found, at = [], [0]
+
+    def walk(rows):
+        for row in rows:
+            for member in row:
+                if not isinstance(member, L.Box):
+                    at[0] += 1
+                elif member.kind == "segment":
+                    walk(member.layers[0])
+                else:
+                    first = sum(len(r) for r in member.layers[0])
+                    second = sum(len(r) for r in member.layers[1])
+                    found.append((range(at[0], at[0] + first), range(at[0] + first, at[0] + first + second)))
+                    at[0] += first + second
+    walk(tree)
+    return found
+
+
+def overlay_pairs(codepoints, cluster):
+    """{(j, i)}: glyph indices of a stacked cluster that are the two
+    operands of one overlay (they cross on purpose, rule N4)."""
+    if not cluster.stacked:
+        return set()
+    tree = L.parse_nested(codepoints[cluster.start:cluster.end])
+    if tree is None:
+        return set()
+    found, at = set(), [0]
+
+    def walk(rows):
+        for row in rows:
+            for member in row:
+                if not isinstance(member, L.Box):
+                    at[0] += 1
+                elif member.kind == "segment":
+                    walk(member.layers[0])
+                else:
+                    first = sum(len(r) for r in member.layers[0])
+                    second = sum(len(r) for r in member.layers[1])
+                    found.update((at[0] + j, at[0] + first + i) for j in range(first) for i in range(second))
+                    at[0] += first + second
+    walk(tree)
+    return found
+
+
+# MdC-like texts for this section: "(" and ")" the segment controls, "##"
+# the overlay, ":" and "*" the joiners.
+def nested(text):
+    codes = {"(": SB, ")": SE, ":": V, "*": H, "#": OV}
+    out, token = [], ""
+    for char in text.replace("##", "#") + " ":
+        if char.isalnum():
+            token += char
+            continue
+        if token:
+            out.append(L.code_point(token))
+            token = ""
+        if char in codes:
+            out.append(codes[char])
+    return out
+
+
+NEST_PARSES = [  # text: tree, or None if not well formed (the syntax of section 8)
+    ("(Q3:X1)*V28", (((L.Box("segment", (((0x132AA,), (X1,)),)), V28),))),
+    ("V28*(Q3:X1)", (((V28, L.Box("segment", (((0x132AA,), (X1,)),))),))),
+    ("G17##D36", ((L.Box("overlay", (((G17,),), ((D36,),))),),)),
+    ("A1*G17##D36", ((A1, L.Box("overlay", (((G17,),), ((D36,),)))),)),
+    ("(Q3*X1)##N35", ((L.Box("overlay", (((0x132AA, X1),), ((N35,),))),),)),
+    ("N35##(Q3:X1)", ((L.Box("overlay", (((N35,),), ((0x132AA,), (X1,)))),),)),
+    ("((Q3:X1)*Z1:N35)*A1", None),  # a segment as the first of two: fine, and depth 2
+    ("(Q3:X1)", None), ("(Q3*X1)*A1", None), ("((Q3:X1):N35)*A1", None),  # not a vertical group in a row
+    ("(Q3:X1", None), ("Q3:X1)", None), ("()*A1", None), ("(Q3:)*A1", None),
+    ("G17##D36##N35", None), ("(G17:D36)##N35", None), ("N35##(Q3*X1)", None), ("##N35", None), ("N35##", None),
+    ("(((Q3:X1)*Z1:N35)*A1:N35)*A1", None),  # three deep: beyond MAX_DEPTH
+    ("((Q3##X1)*Z1:N35)*A1", None),  # an overlay three deep
+    ("Q3:X1", None),  # no segment or overlay control: section 4's parse
+]
+if L.MAX_DEPTH >= 2:  # a segment in a segment
+    NEST_PARSES[6] = ("((Q3:X1)*Z1:N35)*A1", ((L.Box("segment", ((
+        (L.Box("segment", (((0x132AA,), (X1,)),)), Z1), (N35,)),)), A1),))
+    NEST_PARSES.append(("(Q3##X1:N35)*A1", ((L.Box("segment", (((L.Box("overlay", (((0x132AA,),), ((X1,),))),),
+                                                                (N35,)),)), A1),)))
+else:
+    NEST_PARSES.append(("(Q3##X1:N35)*A1", None))  # an overlay in a segment: depth 2
+
+NEST_GOLDEN = [  # text: [(advance, [(code point, x, y, level, scale)])], checked by eye on the proof sheets
+    ("(Q3:X1)*V28", [(1054, [(0x132AA, 122, 578, 0, 1.0), (X1, 7, -126, 0, 1.0), (V28, 600, 3, 0, 1.0)])]),
+    ("G17##D36", [(1324, [(G17, 104, 18, 0, 1.0), (D36, 7, 270, 0, 0.87)])]),
+    ("M17*(Y5:N35)", [(1318, [(M17, 19, 0, 1, 0.855), (0x133E0, 277, 281, 1, 0.855), (N35, 280, 154, 1, 0.855)])]),
+    ("N35##(Q3:X1)", [(1234, [(N35, 18, 351, 0, 1.0), (0x132AA, 415, 384, 0, 1.0), (X1, 300, -202, 0, 1.0)])]),
+    ("(Q3*X1)##N35", [(1234, [(0x132AA, 123, 339, 0, 1.0), (X1, 480, 113, 0, 1.0), (N35, 18, 486, 0, 1.0)])]),
+    ("A1*G17##D36", [(1098, [(A1, 25, 0, 5, 0.48), (G17, 487, 9, 5, 0.485), (D36, 452, 135, 5, 0.406)])]),
+]
+
+NEST_UNSTACKED = [  # well formed, but a box or the group is too large (rule N2)
+    "(G17:D36)*A1", "A1*(N35:N35:N35:N35:N35*N35)", "(A1*A1*A1:X1)*Z1",
+]
+
+
+def test_nesting(signs):
+    for text, expected in NEST_PARSES:
+        found = L.parse_nested(nested(text))
+        check(found == expected, f"parse_nested {text}: {found}")
+    for text, expected in NEST_GOLDEN:
+        got = result(nested(text), signs)
+        check(got == expected, f"{text}:\n  got      {got}\n  expected {expected}")
+    for text in [t for t, tree in NEST_PARSES if tree is None and any(c in L.NESTING for c in nested(t))] + NEST_UNSTACKED:
+        clusters = L.layout(nested(text), signs)
+        check(not any(c.stacked for c in clusters), f"{text}: stacked although malformed or too large")
+        check_visible(nested(text), signs)
+    # Ptah, the owner's example: p over t beside the tall h, all full size
+    (ptah,) = L.layout(nested("(Q3:X1)*V28"), signs)
+    p, t, h = ptah.glyphs
+    inks = [L.ink_box(g, signs) for g in ptah.glyphs]
+    check({g.level for g in ptah.glyphs} == {0}, "Ptah: not at full size")
+    check(inks[0][1] - inks[1][3] >= L.GAP and inks[0][3] <= inks[2][3] + 2 and inks[1][1] >= inks[2][1] - 2,
+          "Ptah: p is not over t, within the height of h")
+    check(abs((inks[0][0] + inks[0][2]) - (inks[1][0] + inks[1][2])) <= 2, "Ptah: p and t are not centred on each other")
+    check(inks[2][0] - max(inks[0][2], inks[1][2]) >= L.GAP - 2, "Ptah: h is not beside p and t")
+    margins = (TOP - (inks[0][3] + 0), inks[1][1])
+    # N3: two rows share the free height as in the quadrat: as much room above p as below t (cells)
+    # G17 + D36 is arranged like the ready-made sign G20: the arm across the owl, both full size
+    (owl,) = L.layout(nested("G17##D36"), signs)
+    a, b = (L.ink_box(g, signs) for g in owl.glyphs)
+    check(owl.glyphs[0].level == 0 and owl.glyphs[0].scale == 1.0, "G17 + D36: the owl is not full size")
+    check(a[1] < b[1] < b[3] < a[3] and a[0] < (b[0] + b[2]) / 2 < a[2], "G17 + D36: the arm does not cross the owl")
+    # N4: the cells of two operands share their centre
+    for text in ("G17##D36", "N35##(Q3:X1)", "(Q3*X1)##N35", "A1*X1##Z1:N35", "(Q3:X1)*A1##D21"):
+        (cluster,) = [c for c in L.layout(nested(text), signs) if c.stacked]
+        k = cluster.glyphs[0].level
+        step, up = L.half_unit(k), L.unit(k)
+        for first, second in box_layers(L.parse_nested(nested(text))):
+            centres = []
+            for part in (first, second):
+                cells = []
+                for g in (cluster.glyphs[j] for j in part):
+                    dx, dy = L.sign_offset(signs[g.codepoint], k)
+                    a, b = signs[g.codepoint].cell
+                    left, line = g.x - dx - L.half(a, step), g.y - dy
+                    cells.append((left, line, left + a * step, line + b * up))
+                centres.append(((min(c[0] for c in cells) + max(c[2] for c in cells)) / 2,
+                                (min(c[1] for c in cells) + max(c[3] for c in cells)) / 2))
+            check(abs(centres[0][0] - centres[1][0]) <= 1 and abs(centres[0][1] - centres[1][1]) <= up / 2 + 1,
+                  f"{text}: the operands are not centred on each other: {centres}")
+    # random well-formed and broken nested groups: everything stays visible,
+    # a well-formed one that fits is one group at one level
+    rng = random.Random(29)
+    codepoints = sorted(signs)
+    small = [c for c in codepoints if signs[c].cell[1] <= 6]
+    narrow = [c for c in small if signs[c].cell[0] <= 14]  # two of them fit a box
+    outcomes = {}
+
+    def sign(depth=1):
+        r = rng.random()
+        return rng.choice(narrow if depth and r < 0.7 else small if r < 0.8 else codepoints)
+
+    def member(depth):  # now and then one deeper than the font goes
+        r = rng.random()
+        if (depth < L.MAX_DEPTH or rng.random() < 0.1) and depth <= L.MAX_DEPTH and r < 0.25:
+            rows = [row(depth + 1) for _ in range(rng.choice((2, 2, 3)))]
+            return [SB] + sum(([V] + x for x in rows[1:]), rows[0]) + [SE]
+        if (depth < L.MAX_DEPTH or rng.random() < 0.1) and depth <= L.MAX_DEPTH and r < 0.4:
+            left = [sign()] if rng.random() < 0.6 else [SB, sign(), H, sign(), SE]
+            right = [sign()] if rng.random() < 0.6 else [SB, sign(), V, sign(), SE]
+            return left + [OV] + right
+        return [sign(depth)]
+
+    def row(depth):
+        members = [member(depth) for _ in range(rng.choice((1, 2, 2, 3) if depth else (1, 2, 2)))]
+        return sum(([H] + m for m in members[1:]), members[0])
+
+    for n in range(1500):
+        rows = [row(0) for _ in range(rng.choice((1, 1, 2)))]
+        text = sum(([V] + r for r in rows[1:]), rows[0])
+        if n % 3 == 0:  # broken: a control added or taken away
+            i = rng.randrange(len(text) + 1)
+            if rng.random() < 0.5 and len(text) > 1:
+                del text[min(i, len(text) - 1)]
+            else:
+                text.insert(i, rng.choice((SB, SE, OV, V, H)))
+        check_visible(text, signs)
+        tree = L.parse_nested(text)
+        clusters = L.layout(text, signs)
+        if tree is not None and L.boxes_fit(tree, signs) and L.fit_level(*L._rows_size(tree, signs)[:2]) is not None:
+            check(len(clusters) == 1 and clusters[0].stacked and len({g.level for g in clusters[0].glyphs}) == 1,
+                  f"{label(text)}: not one group at one level")
+            outcomes["stacked"] = outcomes.get("stacked", 0) + 1
+        elif any(c in L.NESTING for c in text):
+            outcomes["unstacked"] = outcomes.get("unstacked", 0) + 1
+    check(outcomes.get("stacked", 0) > 150 and outcomes.get("unstacked", 0) > 300, f"random nested: {outcomes}")
+    print(f"  segments and overlay: {len(NEST_PARSES)} parses, {len(NEST_GOLDEN)} golden, random {outcomes}")
+
+
+# --- insertion at middle, top and bottom (layout section 9) ------------------
+
+def side_inserted(codepoints, cluster, signs):
+    """Whether a cluster is a sign inserted at the middle, top or bottom of another."""
+    run = codepoints[cluster.start:cluster.end]
+    return L.is_side_insertion(run) and L.side_insertion(*run, signs) is not None
+
+
+def check_side_inserted(name, run, cluster, signs):
+    """Rules S1 to S4, said as properties of one insertion."""
+    base, control, sign = run
+    b, i = cluster.glyphs
+    lift = signs[base].lift
+    check(cluster.advance == signs[base].advance and b == L.Glyph(base, 0, lift, 0, 1.0),
+          f"{name}: the base is not the lone sign")
+    check(i.level in L.SIDE_LEVELS and i.scale == signs[sign].scales[i.level], f"{name}: not a variant")
+    ink = L.ink_box(i, signs)
+    box = signs[base].box
+    check(box[0] - 1 <= ink[0] and ink[2] <= box[2] + 1 and box[1] - 1 <= ink[1] - lift and ink[3] - lift <= box[3] + 1,
+          f"{name}: the inserted sign leaves the base's ink box")
+    # never on the base's ink (measured on lines LINE apart: up to LINE closer)
+    ys = [y for y in range(box[1], box[3]) if ink[1] - lift - L.GAP + L.LINE + 2 <= y <= ink[3] - lift + L.GAP - L.LINE - 2]
+    pen = L._Lines(SOURCE, ys or [box[1]])
+    SOURCE[signs[base].name].draw(pen)
+    lines = pen.ink() if ys else {}
+    near = [(y, a, c) for y, found in lines.items() for a, c in found
+            if a < ink[2] + L.GAP - 2 and c > ink[0] - L.GAP + 2]
+    check(not near, f"{name}: the inserted sign comes within GAP of the base's ink")
+    zone = signs[base].corners[control][0][L.shape_of(signs[sign])]
+    check(abs((ink[0] + ink[2]) / 2 - zone.x) <= 1, f"{name}: the inserted sign is not centred on its zone")
+    if control == L.MIDDLE_INSERT:
+        check(abs((ink[1] + ink[3]) / 2 - lift - zone.y) <= L.STEP / 2 + 1, f"{name}: not in the middle of its zone")
+    elif control == L.BOTTOM_INSERT:
+        check(abs(ink[1] - lift - box[1]) <= 1, f"{name}: not on the base's line")
+
+
+O6, O1, D28 = 0x13257, 0x13250, 0x13093
+SIDE_GOLDEN = [  # checked by eye on the proof sheets
+    ([O6, 0x13439, R8], [(839, [(O6, 0, 0, 0, 1.0), (R8, 295, 434, 5, 0.425)])]),  # the house of the god
+    ([O1, 0x13439, X1], [(1377, [(O1, 0, 0, 0, 1.0), (X1, 455, 194, 2, 0.738)])]),
+    ([D28, 0x1343A, Z1], [(703, [(D28, 0, 0, 0, 1.0), (Z1, 276, 135, 2, 0.723)])]),
+    ([0x132DE, 0x1343B, X1], [(1306, [(0x132DE, 0, 0, 0, 1.0), (X1, 443, -120, 3, 0.665)])]),
+]
+
+
+def test_side_insertion(signs):
+    for codepoints, expected in SIDE_GOLDEN:
+        got = result(codepoints, signs)
+        check(got == expected, f"{label(codepoints)}:\n  got      {got}\n  expected {expected}")
+    m, t, b = L.SIDES
+    unstacked = [[m, X1], [O6, m], [m], [O6, m, m, X1], [O6, m, X1, V, N35], [O6, m, X1, m, Z1],
+                 [O6, 0x200D, m, X1], [O6, m, 0x20, X1], [SB, O6, m, X1, SE], [O6, m, X1, OV, Z1]]
+    for codepoints in unstacked:
+        check(not any(c.stacked for c in L.layout(codepoints, signs)), f"{label(codepoints)}: stacked")
+        check_visible(codepoints, signs)
+    rng = random.Random(31)
+    codepoints = sorted(signs)
+    small = [c for c in codepoints if L.insertable(signs[c])]
+    outcomes = {}
+    for _ in range(3000):
+        control = rng.choice(L.SIDES)
+        having = [c for c in codepoints if signs[c].corners[control][0]["flat"].width]
+        text = [rng.choice(having if rng.random() < 0.7 else codepoints), control,
+                rng.choice(small if rng.random() < 0.7 else codepoints)]
+        check_visible(text, signs)
+        found = L.side_insertion(*text, signs)
+        key = f"{'mtb'[L.SIDES.index(text[1])]} " + ("side by side" if found is None else "inserted")
+        outcomes[key] = outcomes.get(key, 0) + 1
+    zones = {c: sum(bool(signs[x].corners[c][0]["flat"].width) for x in signs) for c in L.SIDES}
+    check(all(outcomes.get(f"{k} inserted", 0) > 20 for k in "mtb"), f"side insertions: {outcomes}")
+    print(f"  side insertions: bases with a zone (flat) m/t/b {list(zones.values())}, random {outcomes}")
+
+
 def main():
     signs = L.sign_table(SOURCE)
     tests = (test_constants, test_signs, test_grammar, test_golden, test_golden_notices_constants,
              test_owner_rules, test_rounding, test_insertion, test_malformed, test_random,
-             test_automatic)
+             test_automatic, test_nesting, test_side_insertion)
     for test in tests:
         try:
             test(signs)
