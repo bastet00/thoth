@@ -50,18 +50,21 @@ TABLE = L.automatic_table()  # the automatic layer (feature calt), on by default
 AUTOMATIC = glyphs.Automatic(TABLE)
 AUTOMATIC_MARKS = set(AUTOMATIC.markers())
 NAMES = glyphs.Names(SIGNS, SOURCE)
-ENCLOSURES = glyphs.Enclosures(SIGNS, L.ring_table(SOURCE, SIGNS))  # layout section 8
+NESTING, SIDES = glyphs.Nesting(SIGNS), glyphs.SideInserts(SIGNS)  # layout sections 8 and 9
+ENCLOSURES = glyphs.Enclosures(SIGNS, L.ring_table(SOURCE, SIGNS))  # layout section 10
 V, H = L.VERTICAL_JOINER, L.HORIZONTAL_JOINER
 FALLBACK = "control.fallback"
 
-# Limits for the budget test, set from the build with enclosures and sign
-# modifiers (MEASURED) with a little room. Before: the base (d0898e3) 12,604
-# glyphs, 1,215,364 bytes TTF, 435,736 bytes WOFF2; without the shape rule
-# 12,602, 1,213,596 and 434,888; without the automatic layer 12,594,
-# 1,184,664 and 427,992; without corner insertion 12,398, 1,083,928 and
-# 392,620. Enclosures (section 8) alone add 264 glyphs and about 70 KB TTF,
-# the sign modifiers (section 9) alone 5,057 glyphs and about 333 KB TTF.
-MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 18_100, 1_700_000, 540_000
+# Limits for the budget test, set from the build with every control (20,099
+# glyphs, 1,900,096 bytes TTF, 589,772 bytes WOFF2) with a little room. Its
+# parts, each built alone on the base (d0898e3: 12,604 glyphs, 1,215,364
+# bytes TTF, 435,736 bytes WOFF2): enclosures (section 10) +264 glyphs and
+# about 70 KB TTF, sign modifiers (section 11) +5,057 and about 333 KB,
+# segments, overlay and side insertion (sections 8 and 9) +2,174 and about
+# 268 KB. Before them: without the shape rule 12,602, 1,213,596 and 434,888;
+# without the automatic layer 12,594, 1,184,664 and 427,992; without corner
+# insertion 12,398, 1,083,928 and 392,620.
+MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 20_300, 1_950_000, 610_000
 
 # Egyptological transliteration, beyond the basic Latin set.
 TRANSLITERATION = [
@@ -129,7 +132,7 @@ def group(rows):
 
 
 def enclosure_parts():
-    """Every layout.Frame part an enclosure can draw (layout section 8)."""
+    """Every layout.Frame part an enclosure can draw (layout section 10)."""
     parts = [("piece", d) for d in (*L.OPENINGS, *L.CLOSINGS)]
     parts += [("line", k, m, s) for k in ENCLOSURES.kinds for m in L.SEGMENTS for s in ("start", "end")]
     return parts + [("merlons", "walled", n) for n in ENCLOSURES.counts]
@@ -174,9 +177,7 @@ class Shaper:
         # what an enclosure draws (layout.Frame parts) and its spacers, which carry an advance
         self.frames = {ENCLOSURES.frame_name(part): part for part in enclosure_parts()}
         self.spacers = {ENCLOSURES.spacer(cell) for cell in ENCLOSURES.cells}
-
-
-        # section 9: mirrored signs (drawn as their sign, flipped), the boxes
+        # section 11: mirrored signs (drawn as their sign, flipped), the boxes
         # of stray damage modifiers, pieces of shading, the small mirror box
         m = NAMES.modifiers
         self.mirrored = {m.lone(c): (c, None) for c in m.mirrored}
@@ -266,10 +267,11 @@ class Shaper:
                 continue
             problems += self.clusters(c, [shaped[i][1] for i in mine])
             run = [t for t, o in zip(*implied) if c.start <= o < c.end]  # with the implied controls
-            inserted = c.stacked and L.is_insertion(run) and L.insertion(*run, SIGNS) is not None
+            inserted = c.stacked and ((L.is_insertion(run) and L.insertion(*run, SIGNS) is not None)
+                                      or (L.is_side_insertion(run) and L.side_insertion(*run, SIGNS) is not None))
             for index, (((codepoint, level), x, y, glyph_advance), glyph) in enumerate(zip(seen, c.glyphs)):
                 if L.is_hatch(glyph.codepoint) or (glyph.codepoint == L.MIRROR and glyph.scale == L.MIRROR_BOX):
-                    # section 9: a piece of shading or the small mirror box,
+                    # section 11: a piece of shading or the small mirror box,
                     # drawn from the point it hangs from
                     box = L.mirror_box(0, 0) if glyph.codepoint == L.MIRROR else L.Glyph(0, 0, 0, 0, 1.0)
                     if codepoint != glyph.codepoint or (x, y) != (glyph.x - box.x, glyph.y - box.y):
@@ -446,7 +448,8 @@ def test_glyphs(shaper):
         worst = max(worst, *(abs(a - b) for a, b in zip(found, expected)))
     check(worst <= 2, f"a variant's ink is {worst:.2f} units from the reference")
     markers = [*NAMES.markers(), *NAMES.inserts.markers(), *AUTOMATIC.markers(),
-               *(n for k in glyphs.LEVELS for n in NAMES.leveled(k) if n not in shaper.variants)]
+               *(n for k in glyphs.LEVELS for n in NAMES.leveled(k) if n not in shaper.variants),
+               *NESTING.markers(), NESTING.run_start, NESTING.bad_start, *SIDES.markers()]
     check(all(hmtx[m][0] == 0 and not outline(shaper, m) for m in markers), "a marker draws or advances")
     # a shrunk bird (layout rule I4): one component, its bird scaled and
     # moved as layout.shrink() says, with the bird's advance
@@ -458,7 +461,7 @@ def test_glyphs(shaper):
         check(component.glyphName == sign.name and abs(transform[0][0] - scale) < 1 / 16384
               and (component.x, component.y) == (x, L._round(y + sign.lift - scale * sign.lift))
               and hmtx[name][0] == sign.advance, f"{name}: {component.glyphName} at {transform}")
-    for name in NAMES.inserts.candidates():  # a candidate that no rule takes shows the box
+    for name in NAMES.inserts.candidates() + SIDES.candidates():  # a candidate that no rule takes shows the box
         check(outline(shaper, name) == outline(shaper, FALLBACK) and hmtx[name][0] == L.CONTROL_ADVANCE,
               f"{name} is not the fallback box")
     heads = NAMES.heads()
@@ -551,7 +554,7 @@ def test_groups(shaper):
 MALFORMED = [
     ":", ":N35", "*A1-A1", "X1:N35:", "X1::N35", "X1::N35-A1", "X1:*N35", 'X1:" "N35', 'X1"\u200d":N35',
     '":"A1:N35', '"*"', '<13437>X1:N35', "X1:N35<13438>", "<13437>X1:N35<13438>",
-    "M17*<13437>X1:N35:A1", "X1<13436>O1-N35", "A1<13432>O1-X1", "A1<13440>",
+    "M17*<13437>X1:N35:A1", "X1<13436><13436>O1-N35", "A1<13432>O1-X1", "A1<13440>",
     "I9:N35:<13113><13433>A1", "".join(f"<{c:X}>" for c in glyphs.CONTROLS),
     "A1:A1:A1:A1", "N35*N35*N35", "D58:D58:D58:D58:N35",  # over the caps
     '"a":X1', 'X1:"a"', 'X1"\u0331":N35', 'X1:N35"\u0331"', '":"', "X1*",
@@ -767,7 +770,166 @@ def test_automatic(shaper):
           f"{failed} failed; with calt off {off_count} texts, {off_failed} failed")
 
 
-# Enclosures (layout section 8). Text in the little MdC of encode(), with
+# Segments and overlay (layout section 8). Golden lines of the font
+# (written here, not read from the font or from layout.py), then malformed
+# text, text with the automatic layer around it, and seeded random groups
+# rich in these controls, each compared with the reference glyph by glyph.
+SB, SE, OV = L.SEGMENT_START, L.SEGMENT_END, L.OVERLAY
+
+
+def encode_nested(mdc):
+    """encode(), and "(" ")" for the segment controls, "##" for the overlay."""
+    return encode(mdc.replace("##", "<13436>").replace("(", "<13437>").replace(")", "<13438>"))
+
+
+NEST_WORDS = {  # mdc: (advance of the line, [(glyph, x, y)] of the glyphs that draw)
+    # Ptah: p over t beside the tall h, all at full size
+    "(Q3:X1)*V28": (1054, [("_0.u132AA", 324, 554), ("_0.u133CF", 324, 76), ("_0.u1339B", 819, 0)]),
+    "G17##D36": (1324, [("_0.u13153", 662, 0), ("_0.u1309D", 662, 270)]),  # arranged like G20
+    "M17*(Y5:N35)": (1318, [("_1.u131CB", 165, 0), ("_1.u133E0", 792, 454), ("_1.u13216", 792, 85)]),
+    "N35##(Q3:X1)": (1234, [("_0.u13216", 617, 270), ("_0.u132AA", 617, 360), ("_0.u133CF", 617, 0)]),
+    "(Q3*X1)##N35": (1234, [("_0.u132AA", 325, 315), ("_0.u133CF", 797, 315), ("_0.u13216", 617, 405)]),
+    "A1*G17##D36": (1098, [("_5.u13000", 241, 0), ("_5.u13153", 758, 0), ("_5.u1309D", 758, 135)]),
+    "N35:(Q3:X1)*V28": (922, [("_2.u13216", 461, 852), ("_2.u132AA", 246, 438), ("_2.u133CF", 246, 85),
+                              ("_2.u1339B", 741, 27)]),
+    "(X1*Z1:N35)*A1": (1279, [("_4.u133CF", 207, 316), ("_4.u133E4", 680, 316), ("_4.u13216", 383, 62),
+                              ("_4.u13000", 990, 0)]),  # the row of two justified in the box
+    "(N35:N35:N35)*A40": (1294, [("_3.u13216", 422, 450), ("_3.u13216", 422, 270), ("_3.u13216", 422, 90),
+                                 ("_3.u1302D", 1037, 0)]),
+}
+
+NEST_MALFORMED = [
+    "(Q3:X1)", "(Q3*X1)*V28", "((Q3:X1):N35)*A1", "(Q3:X1*V28", "Q3:X1)*V28", "()*A1", "(Q3:)*A1",
+    "G17##D36##N35", "(G17:D36)##N35", "N35##(Q3*X1)", "##N35", "N35##", "G17####D36",
+    "(Q3##X1:N35)*A1" if L.MAX_DEPTH < 2 else "(((Q3:X1)*Z1:N35)*A1:N35)*A1",
+    "((Q3:X1)*Z1:N35)*A1" if L.MAX_DEPTH < 2 else "((Q3##X1)*Z1:N35)*A1",
+    "(G17:D36)*A1", "(A1*A1*A1:X1)*Z1",  # a box over one quadrat
+    '(Q3:"\u200c"X1)*V28', '(Q3:X1)" "*V28', '(Q3:X1)*"\u200d"V28', 'G17"\u200c"##D36', 'N35##" "N35',
+    "(Q3:X1)*V28<13432>X1", "(Q3<13434>X1:N35)*A1", "G17##<13440>D36", "(Q3:X1)*<13439>V28",
+    # (with the sign modifiers, "G17##D36<13440>" is an overlay with D36 mirrored: test_all_controls)
+]
+
+
+def nested_random(rng, count):
+    """Seeded random groups with segments and overlays (some one level
+    deeper than the font goes), some broken, some in a line."""
+    codepoints = sorted(SIGNS)
+    small = [c for c in codepoints if SIGNS[c].cell[1] <= 6]
+    narrow = [c for c in small if SIGNS[c].cell[0] <= 14]
+
+    def sign(depth=1):
+        r = rng.random()
+        return rng.choice(narrow if depth and r < 0.7 else small if r < 0.8 else codepoints)
+
+    def member(depth):
+        r = rng.random()
+        deeper = (depth < L.MAX_DEPTH or rng.random() < 0.1) and depth <= L.MAX_DEPTH
+        if deeper and r < 0.25:
+            rows = [row(depth + 1) for _ in range(rng.choice((2, 2, 3)))]
+            return [SB] + sum(([V] + x for x in rows[1:]), rows[0]) + [SE]
+        if deeper and r < 0.4:
+            left = [sign()] if rng.random() < 0.6 else [SB, sign(), H, sign(), SE]
+            right = [sign()] if rng.random() < 0.6 else [SB, sign(), V, sign(), SE]
+            return left + [OV] + right
+        return [sign(depth)]
+
+    def row(depth):
+        members = [member(depth) for _ in range(rng.choice((1, 2, 2, 3) if depth else (1, 2, 2)))]
+        return sum(([H] + m for m in members[1:]), members[0])
+
+    texts = []
+    for _ in range(count):
+        rows = [row(0) for _ in range(rng.choice((1, 1, 2)))]
+        text = sum(([V] + r for r in rows[1:]), rows[0])
+        if rng.random() < 0.35:  # broken: a control or character added or taken away
+            for _ in range(rng.choice((1, 1, 2))):
+                i = rng.randrange(len(text) + 1)
+                r = rng.random()
+                if r < 0.3 and len(text) > 1:
+                    del text[min(i, len(text) - 1)]
+                elif r < 0.6:
+                    text.insert(i, rng.choice((SB, SE, OV, V, H, 0x13432, 0x13439, 0x200C, 0x20)))
+                else:
+                    text.insert(i, sign(0))
+        if rng.random() < 0.3:  # in a line, next to plain signs (the automatic layer)
+            text = [sign(0)] * rng.choice((0, 1, 2)) + [0x20] * (rng.random() < 0.5) + text + [sign(0)] * rng.choice((0, 1, 2))
+        texts.append(text)
+    return texts
+
+
+def test_nesting(shaper):
+    for mdc, expected in NEST_WORDS.items():
+        text = encode_nested(mdc)
+        shaped = shaper.shape(text)
+        found = (sum(g[4] for g in shaped), [(g[0], g[2], g[3]) for g in shaped if shaper.drawn(g[0])])
+        check(found == expected, f"{mdc}: {found}, expected {expected}")
+        check(not shaper.compare(text), f"{mdc}: {shaper.compare(text)[:3]}")
+    texts = [encode_nested(mdc) for mdc in NEST_MALFORMED]
+    for text in texts:
+        check(not any(c.stacked for c in L.layout(text, SIGNS, TABLE)), f"{label(text)}: the reference stacks it")
+    rng = random.Random(41)
+    texts += nested_random(rng, 3000)
+    words = [list(key[1:-1] if key[-1] == L.END else key[1:]) for key in TABLE if key[0] == L.START][:40]
+    for word in words:  # a word of the automatic layer right next to a segment
+        texts += [word + encode_nested("(Q3:X1)*V28"), encode_nested("(Q3:X1)*V28") + word,
+                  word + [H] + encode_nested("G17##D36")]
+    stacked = sum(any(c.stacked and any(x in L.NESTING for x in t[c.start:c.end])
+                      for c in L.layout(t, SIGNS, TABLE)) for t in texts)
+    compared, failed = compare_all(shaper, texts)
+    off = Shaper(shaper.path, table=None, features={"calt": False})
+    off_compared, off_failed = compare_all(off, texts[::5])
+    check(stacked > 400, f"only {stacked} nested groups among the texts")
+    print(f"  segments and overlay: {len(NEST_WORDS)} golden lines; {compared} texts compared ({stacked} with a "
+          f"stacked box), {failed} differ; with calt off {off_compared} compared, {off_failed} differ")
+
+
+# Insertion at middle, top and bottom (layout section 9).
+SIDE_WORDS = {  # mdc: (advance of the line, [(glyph, x, y)] of the glyphs that draw)
+    "O6<13439>R8": (839, [("u13257", 0, 0), ("_5.u132B9", 420, 343)]),  # the house of the god
+    "O1<13439>X1": (1377, [("u13250", 0, 0), ("_2.u133CF", 689, 343)]),
+    "D28<1343A>Z1": (703, [("u13093", 0, 0), ("_2.u133E4", 352, 135)]),  # between the arms of ka
+    "S12<1343B>X1": (1306, [("u132DE", 0, 0), ("_3.u133CF", 653, 14)]),  # under the collar
+    "O6<1343A>X1": (1324, [("_0.u13257", 369, 0), ("_0.u133CF", 999, 0)]),  # no opening on top: side by side
+}
+SIDE_UNSTACKED = [
+    "<13439>X1", "O6<13439>", "<13439>", "O6<13439><13439>X1", "O6<13439>X1:N35", "N35:O6<13439>X1",
+    "O6<13439>X1<1343A>Z1", 'O6"‍"<13439>X1', 'O6<13439>" "X1', "O6<13439>X1<13436>Z1",
+    "<13437>O6<13439>X1:N35<13438>*A1", "O6<13434>X1<13439>Z1",
+]
+SIDE_BY_SIDE = ["O6<1343A>X1", "A1<13439>X1", "N35<1343B>X1", "O1<1343A>A1", "D28<1343B>Z1"]
+
+
+def test_side_insertion(shaper):
+    for mdc, expected in SIDE_WORDS.items():
+        text = encode(mdc)
+        shaped = shaper.shape(text)
+        found = (sum(g[4] for g in shaped), [(g[0], g[2], g[3]) for g in shaped if shaper.drawn(g[0])])
+        check(found == expected, f"{mdc}: {found}, expected {expected}")
+    texts = [encode(mdc) for mdc in [*SIDE_WORDS, *SIDE_UNSTACKED, *SIDE_BY_SIDE]]
+    for mdc in SIDE_UNSTACKED:
+        check(not any(c.stacked for c in L.layout(encode(mdc), SIGNS, TABLE)), f"{mdc}: the reference stacks it")
+    for mdc in SIDE_BY_SIDE:
+        run = [c for c in encode(mdc) if L.is_sign(c) or c in L.CONTROLS]
+        check(L.side_insertion(*run, SIGNS) is None, f"{mdc}: the reference inserts it")
+    rng = random.Random(43)
+    codepoints = sorted(SIGNS)
+    small = [c for c in codepoints if L.insertable(SIGNS[c])]
+    inserted = 0
+    for _ in range(1500):
+        control = rng.choice(L.SIDES)
+        having = [c for c in codepoints if SIGNS[c].corners[control][0]["flat"].width]
+        run = [rng.choice(having if rng.random() < 0.7 else codepoints), control,
+               rng.choice(small if rng.random() < 0.6 else codepoints)]
+        inserted += L.side_insertion(*run, SIGNS) is not None
+        line = [rng.choice(codepoints)] * (rng.random() < 0.3) + [0x20] * (rng.random() < 0.3) + run
+        texts.append(line)
+    compared, failed = compare_all(shaper, texts)
+    check(inserted > 250, f"only {inserted} random side insertions insert")
+    print(f"  side insertions: {len(SIDE_WORDS)} golden lines; {compared} texts compared ({inserted} inserted), "
+          f"{failed} differ")
+
+
+# Enclosures (layout section 10). Text in the little MdC of encode(), with
 # the controls written as code points: B and E for the cartouche pair,
 # BW and EW for the walled pair.
 B, E, BW, EW = "<1343C>", "<1343D>", "<1343E>", "<1343F>"
@@ -897,7 +1059,7 @@ def test_enclosures(shaper):
 
 
 
-# --- sign modifiers: mirroring and damage (layout section 9) -----------------
+# --- sign modifiers: mirroring and damage (layout section 11) ----------------
 #
 # Golden lines of the font (glyphs that draw, (glyph, x, y), and the line's
 # advance), written here; then every damage modifier on signs of different
@@ -1026,6 +1188,113 @@ def test_modifiers(shaper):
           f"{len(NAMES.modifiers.mirrored)} mirrored signs, {len(shaper.pieces)} pieces of shading")
 
 
+# All the controls together (layout sections 8 to 11): golden lines in the
+# form of ENCLOSURE_WORDS, written here, and seeded random text with
+# literals in segments, overlays, side and corner insertions, plain words
+# and groups, most of it in enclosures, compared glyph by glyph.
+ALL_WORDS = {
+    # Ptah in a cartouche, the stool in the segment damaged in full
+    f"V11A{B}<13437>Q3<13455>:X1<13438>*V28{E}V11B": (
+        2288, [("_0.u132AA", 941, 554), ("_ht.1.4.5", 941, 779), ("_ht.2.4.5", 941, 779), ("_ht.4.4.5", 941, 779),
+               ("_ht.8.4.5", 941, 779), ("_0.u133CF", 941, 76), ("_0.u1339B", 1436, 0)],
+        [("u13379.ring", 0, 0), ("_el.p.1024.s", 617, 0), ("_el.p.1024.e", 1671, 0), ("u1337A.ring", 1671, 0)]),
+    # an overlay with its second operand mirrored
+    "G17<13436>D36<13440>": (1324, [("_0.u13153", 662, 0), ("_0m.u1309D", 662, 270)], []),
+    # the flag in the middle of the house, mirrored at level 5: the small box
+    "O1<13439>R8<13440>": (1377, [("u13250", 0, 0), ("_5.u132B9", 689, 133), ("_mir.box", 689, 403)], []),
+    # the same, damaged at top end, in a cartouche: moved down by 110
+    f"V11A{B}O1<13439>R8<13440><1344A>{E}V11B": (
+        2611, [("u13250", 617, -110), ("_5.u132B9", 1306, 23), ("_mir.box", 1306, 293), ("_ht.4.3.6", 1306, 293)],
+        [("u13379.ring", 0, 0), ("_el.p.1024.s", 617, 0), ("_el.p.1024.e", 1994, 0), ("u1337A.ring", 1994, 0)]),
+}
+
+
+def all_control_texts(rng, count):
+    """Seeded random text with every control (see above)."""
+    hieroglyphs = [c for c in sorted(SIGNS) if c in L.HIEROGLYPHS]
+    small = [c for c in hieroglyphs if L.insertable(SIGNS[c])]
+    low = [c for c in hieroglyphs if SIGNS[c].cell[1] <= 6]
+    narrow = [c for c in hieroglyphs if SIGNS[c].cell[0] <= 10]
+    known = sorted({c for key in TABLE for c in key if c not in (L.START, L.END)})
+    having = {c: [b for b in hieroglyphs if SIGNS[b].corners[c][0]["flat"].width] for c in L.SIDES}
+    sb, se, ov = L.SEGMENT_START, L.SEGMENT_END, L.OVERLAY
+
+    def literal(sign):
+        r = rng.random()
+        return [sign] + [MIR] * (r < 0.3) + [rng.choice(L.DAMAGE)] * (0.2 < r < 0.5)
+
+    def part():
+        r = rng.random()
+        if r < 0.15:
+            return literal(rng.choice(hieroglyphs))
+        if r < 0.35:
+            box = [sb, *literal(rng.choice(low)), V, *literal(rng.choice(low)), se]
+            other = literal(rng.choice(narrow))
+            return box + [H] + other if rng.random() < 0.5 else other + [H] + box
+        if r < 0.5:
+            left = literal(rng.choice(hieroglyphs)) if rng.random() < 0.7 else \
+                [sb, *literal(rng.choice(narrow)), H, *literal(rng.choice(narrow)), se]
+            out = left + [ov] + literal(rng.choice(hieroglyphs))
+            return out + [V] + literal(rng.choice(low)) if rng.random() < 0.3 else out
+        if r < 0.65:
+            control = rng.choice(L.SIDES)
+            return literal(rng.choice(having[control])) + [control] + literal(rng.choice(small if rng.random() < 0.6
+                                                                                           else hieroglyphs))
+        if r < 0.72:
+            return literal(rng.choice(list(L.BIRDS) + small)) + [rng.choice(list(L.CORNERS))] + literal(rng.choice(small))
+        if r < 0.85:
+            return [c for _ in range(rng.randint(2, 4)) for c in literal(rng.choice(known))]
+        if r < 0.93:
+            out = []
+            for i in range(rng.randint(1, 3)):
+                out += [V] * bool(i)
+                for j in range(rng.randint(1, 2)):
+                    out += [H] * bool(j) + literal(rng.choice(hieroglyphs))
+            return out
+        return [rng.choice((V, H, sb, se, ov, 0x13439, 0x20, 0x200D, MIR, rng.choice(L.DAMAGE), 0x1343C, 0x1343D, 0xFE00))]
+    texts = []
+    for _ in range(count):
+        text = [c for _ in range(rng.randint(0, 1)) for c in part()]
+        if rng.random() < 0.8:
+            plain = rng.random() < 0.6
+            if rng.random() < 0.85:
+                text += literal(rng.choice(L.OPENINGS)) if rng.random() < 0.2 else [rng.choice(L.OPENINGS)]
+            text.append(0x1343C if plain else 0x1343E)
+            for _ in range(rng.randint(1, 4)):
+                text += part()
+            text.append(0x1343D if plain else 0x1343F)
+            if rng.random() < 0.85:
+                text += literal(rng.choice(L.CLOSINGS)) if rng.random() < 0.2 else [rng.choice(L.CLOSINGS)]
+        else:
+            text += [c for _ in range(rng.randint(1, 3)) for c in part()]
+        texts.append(text + [c for _ in range(rng.randint(0, 1)) for c in part()])
+    return texts
+
+
+def test_all_controls(shaper):
+    """Every control together: the golden lines; the font equals the
+    reference on seeded random text, with calt on and off; a modified sign
+    in a box or inserted at middle, top or bottom stands where the sign does."""
+    for mdc, expected in ALL_WORDS.items():
+        shaped = shaper.shape(encode(mdc))
+        found = (sum(g[4] for g in shaped), [(g[0], g[2], g[3]) for g in shaped if shaper.drawn(g[0])],
+                 [(g[0], g[2], g[3]) for g in shaped if g[0] in shaper.frames])
+        check(found == expected, f"{mdc}: {found}, expected {expected}")
+    texts = [encode(mdc) for mdc in ALL_WORDS] + all_control_texts(random.Random(53), 1500)
+    compared, failed = compare_all(shaper, texts)
+    formed = sum(any(c.frame for c in L.layout(t, SIGNS, TABLE)) for t in texts)
+    off = Shaper(shaper.path, table=None, features={"calt": False})
+    off_count, off_failed = compare_all(off, texts[:300])
+    for modified, plain in (("<13437>Q3<13455>:X1<13440><13438>*V28", "<13437>Q3:X1<13438>*V28"),
+                            ("G17<13436>D36<1344F>", "G17<13436>D36"), ("O1<13439>X1<13447>", "O1<13439>X1")):
+        def places(mdc):
+            return [(g[2], g[3]) for g in shaper.shape(encode(mdc)) if g[0] in shaper.variants or g[0] in shaper.lone
+                    or g[0] in shaper.mirrored]
+        check(places(modified) == places(plain), f"{modified}: {places(modified)}, unmodified {places(plain)}")
+    print(f"  all controls: {compared} texts compared, {failed} differ ({formed} with an enclosure); "
+          f"with calt off {off_count}, {off_failed} differ")
+
+
 def glyphs_of(lookup, names):
     """Every glyph name a lookup refers to (coverages, classes, outputs)."""
     found = set()
@@ -1057,7 +1326,8 @@ def test_lookups(shaper):
                 *NAMES.heads(), *NAMES.markers(), *(n for k in glyphs.LEVELS for n in NAMES.leveled(k)),
                 *NAMES.inserts.bases(), *NAMES.inserts.markers(), *AUTOMATIC.markers(),
                 *ENCLOSURES.bases(), *ENCLOSURES.empty_bases(), *ENCLOSURES.marks(),
-                *NAMES.modifiers.bases(), *NAMES.modifiers.marks(), *NAMES.modifiers.markers()}
+                *NAMES.modifiers.bases(), *NAMES.modifiers.marks(), *NAMES.modifiers.markers(),
+                *NESTING.markers(), NESTING.run_start, NESTING.bad_start, *SIDES.markers(), *SIDES.candidates()}
     shared = {".notdef", "space", NAMES.dotted_circle, NAMES.zwnj, *NAMES.ignorables}
     names = set(shaper.order)
     for tag in ("GSUB", "GPOS"):
@@ -1095,7 +1365,7 @@ def test_budget(shaper):
           + (f", WOFF2 {woff2.stat().st_size} bytes" if woff2.exists() else ""))
 
 
-# Enclosures and sign modifiers together (layout sections 8 and 9): golden
+# Enclosures and sign modifiers together (layout sections 10 and 11): golden
 # lines in the form of ENCLOSURE_WORDS, written here, and seeded random text
 # that mixes enclosures (with modified delimiters too), literals, groups,
 # insertions, plain words and stray characters, compared glyph by glyph.
@@ -1201,8 +1471,8 @@ def main():
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "fonts/ttf/Thoth-Regular.ttf"
     shaper = Shaper(path)
     tests = (test_cmap, test_lone_signs, test_controls, test_glyphs, test_golden, test_words,
-             test_groups, test_insertion, test_malformed, test_mixed, test_automatic, test_enclosures,
-             test_modifiers, test_combined,
+             test_groups, test_insertion, test_malformed, test_mixed, test_automatic, test_nesting,
+             test_side_insertion, test_enclosures, test_modifiers, test_combined, test_all_controls,
              test_lookups, test_budget)
     for test in tests:
         try:

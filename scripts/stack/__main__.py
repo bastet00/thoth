@@ -15,7 +15,7 @@ import ufoLib2
 import layout
 from features import add_features
 from glyphs import (Automatic, Enclosures, Names, add_automatic, add_controls, add_enclosures, add_insertion,
-                    add_modifiers, add_stacking, lift_signs)
+                    add_modifiers, add_nesting, add_side_insertion, add_stacking, lift_signs)
 
 # A designspace with one source, because gftools builder can only add the
 # transliteration letters (includeSubsets in config.yaml) to a designspace.
@@ -55,6 +55,8 @@ def main(source, build_dir):
         raise SystemExit("automatic.txt: " + "; ".join(problems[:10]))
     automatic = Automatic(table)
     add_automatic(font, automatic)
+    font.lib["public.glyphOrder"] += add_nesting(font, names.nesting)  # layout section 8
+    font.lib["public.glyphOrder"] += add_side_insertion(font, names.sides)  # layout section 9
     add_features(font, names, automatic)
 
     shutil.rmtree(build_dir, ignore_errors=True)

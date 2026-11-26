@@ -180,6 +180,20 @@ class Names:
             self._modifiers = Modifiers(self)
         return self._modifiers
 
+    @property
+    def nesting(self):
+        """The glyphs of segments and overlay (Nesting)."""
+        if not hasattr(self, "_nesting"):
+            self._nesting = Nesting(self.signs)
+        return self._nesting
+
+    @property
+    def sides(self):
+        """The glyphs of insertion at middle, top and bottom (SideInserts)."""
+        if not hasattr(self, "_sides"):
+            self._sides = SideInserts(self.signs)
+        return self._sides
+
     # -- the vertical state of a group --
     @staticmethod
     def row_counts(height):
@@ -470,7 +484,462 @@ def add_automatic(font, automatic):
         font.addGlyph(Glyph(name, width=0))
 
 
-# --- Enclosures (layout section 8) --------------------------------------------
+# --- Segments and overlay (layout section 8) ---------------------------------
+
+SEG_TYPES = ("V", "H", "B", "E", "O", "Bf", "Hf", "Ef", "Bg", "Vg", "Eg")
+TYPE_CONTROL = {"V": 0x13430, "H": 0x13431, "B": 0x13437, "E": 0x13438, "O": 0x13436,
+                "Bf": 0x13437, "Hf": 0x13431, "Ef": 0x13438, "Bg": 0x13437, "Vg": 0x13430, "Eg": 0x13438}
+DEAD = "dead"
+
+
+def nest_step(state, token):
+    """The automaton that checks the syntax of layout.parse_nested() on the
+    tokens of a run, left to right: the state after `token` ("S" a sign, a
+    type of SEG_TYPES, or "X" any other control), or DEAD.
+
+    A state is (frames, position): one frame per open segment, (seen a
+    vertical joiner at its level, opened as the first member of its row);
+    position: m0 a member is expected at the start of a row, m1 after a
+    horizontal joiner; aS after a sign, aB after a box, aN after a segment
+    that was the first member of its row (a horizontal joiner must follow);
+    f1/f2/fh/fe in the left operand of an overlay (after "(", after a sign,
+    after a sign and "*", after "*", after ")"); o after the overlay
+    control; gs/g1/g2 in the right operand."""
+    if state == DEAD:
+        return DEAD
+    frames, pos = state
+    depth = len(frames)
+    if token == "S":
+        found = {"m0": "aS", "m1": "aS", "f1": "f2", "fh": "f3", "o": "aB", "gs": "g1", "gv": "g2"}.get(pos)
+        return (frames, found) if found else DEAD
+    if token == "V" and pos in ("aS", "aB"):
+        if frames:
+            frames = frames[:-1] + ((True, frames[-1][1]),)
+        return (frames, "m0")
+    if token == "H" and pos in ("aS", "aB", "aN"):
+        return (frames, "m1")
+    if token == "B" and pos in ("m0", "m1") and depth + 1 <= L.MAX_DEPTH:
+        return (frames + ((False, pos == "m0"),), "m0")
+    if token == "E" and pos in ("aS", "aB") and frames and frames[-1][0]:
+        return (frames[:-1], "aN" if frames[-1][1] else "aB")
+    if token == "O" and pos in ("aS", "fe") and depth + 1 <= L.MAX_DEPTH:
+        return (frames, "o")
+    if token == "Bf" and pos in ("m0", "m1") and depth + 1 <= L.MAX_DEPTH:
+        return (frames, "f1")
+    if token == "Hf" and pos in ("f2", "f3"):
+        return (frames, "fh")
+    if token == "Ef" and pos == "f3":
+        return (frames, "fe")
+    if token == "Bg" and pos == "o":
+        return (frames, "gs")
+    if token == "Vg" and pos in ("g1", "g2"):
+        return (frames, "gv")
+    if token == "Eg" and pos == "g2":
+        return (frames, "aB")
+    return DEAD
+
+
+NEST_START = ((), "m0")
+
+
+def nest_accepts(state):
+    return state != DEAD and not state[0] and state[1] in ("aS", "aB")
+
+
+def nest_role(token, state):
+    """The structural token a checked control is, from its type and the
+    state after it: (type, depth). Segment brackets: the depth of the
+    segment; joiners: the depth of their row; overlay controls: the depth
+    of the overlay's box."""
+    frames = len(state[0])
+    if token == "B":
+        return ("B", frames)
+    if token == "E":
+        return ("E", frames + 1)
+    if token in ("V", "H"):
+        return (token, frames)
+    return (token, frames + 1)
+
+
+class Nesting:
+    """Glyphs of segments and overlay and what the features need to know.
+
+    All are empty marks, but the run start (a base, so that a run's marks
+    end at the next run). The text is checked by an automaton (nest_step):
+    a control of a run with a segment or overlay control becomes pending,
+    then the pending control of its type and of the automaton's state after
+    it; a run the automaton refuses becomes its controls and lone signs
+    again. A checked run's controls become structural tokens, by role and
+    depth (they stay in the run, empty, to the end). Each box is then
+    computed from the inside out (stage 2, stage 1) with placeholders and
+    markers like those of a flat group, and becomes one cell of the row it
+    stands in; stage 0 measures the rows of the group itself. The group
+    then goes through the flat stages like any group (features.py)."""
+
+    def __init__(self, signs, max_depth=L.MAX_DEPTH):
+        self.signs = signs
+        self.depths = range(1, max_depth + 1)
+        self.max_cell = (28, 12)  # layout.BOX_LIMIT
+        # the automaton: every state reachable from the start
+        states, todo = {NEST_START}, [NEST_START]
+        while todo:
+            state = todo.pop()
+            for token in ("S", *SEG_TYPES):
+                found = nest_step(state, token)
+                if found != DEAD and found not in states:
+                    states.add(found)
+                    todo.append(found)
+        self.states = sorted(states, key=repr)
+        self.index = {state: i for i, state in enumerate(self.states)}
+        # the checked controls: (type, state) reachable after that type
+        self.checked = sorted({(t, self.index[nest_step(s, t)]) for s in self.states for t in SEG_TYPES
+                               if nest_step(s, t) != DEAD}, key=lambda x: (SEG_TYPES.index(x[0]), x[1]))
+
+    # -- the check --
+    @staticmethod
+    def pending(codepoint):
+        return f"_np.{codepoint:X}"
+
+    @staticmethod
+    def flat(token):  # a pending control in an overlay's operand
+        return f"_np.{token}"
+
+    @staticmethod
+    def tagged(token, state):
+        return f"_nd.{token}.{state}"
+
+    @staticmethod
+    def dead(codepoint):
+        return f"_nx.{codepoint:X}"
+
+    run_start, bad_start, poisoned = "_nrs", "_nrsx", "_npz"
+
+    # -- structural tokens --
+    @staticmethod
+    def token(kind, depth):
+        return f"_nt.{kind}{depth}"
+
+    def tokens(self, depth=None):
+        found = []
+        for d in range(0, max(self.depths) + 1):
+            if depth is not None and d != depth:
+                continue
+            found += [self.token(k, d) for k in ("V", "H")]
+            if d:
+                found += [self.token(k, d) for k in ("B", "E", *SEG_TYPES[4:])]
+        return found
+
+    # -- markers of a stage --
+    @staticmethod
+    def cell_width(a):
+        return f"_nw.{a:02}"
+
+    @staticmethod
+    def cell_height(b):
+        return f"_nh.{b:02}"
+
+    @staticmethod
+    def width_sum(a, s):
+        return f"_nws.{s:02}.{a:02}" if s != OVER else f"_nws.x.{a:02}"
+
+    @staticmethod
+    def height_max(m):
+        return f"_nhm.{m:02}"
+
+    row_height0, row_width0, row_widtho, row_carrier0 = "_nrh0", "_nrw0", "_nro0", "_nrc0"
+    box_width0, box_height0, box_end0 = "_nbw0", "_nbh0", "_nbe0"
+    layer_seg0, layer_one0, layer_two0 = "_nls0", "_nlo0", "_nlq0"
+
+    @staticmethod
+    def row_m(m):
+        return f"_nrm.{m:02}"
+
+    @staticmethod
+    def row_sum(m, t):
+        return f"_nrs.{t:02}.{m:02}" if t != OVER else f"_nrs.x.{m:02}"
+
+    @staticmethod
+    def row_width(s):
+        return f"_nrw.{s:02}" if s != OVER else "_nrw.x"
+
+    @staticmethod
+    def row_pair(s):
+        return f"_nrp.{s:02}"
+
+    @staticmethod
+    def carrier(g):
+        return f"_nrc.{g:02}" if g != OVER else "_nrc.x"
+
+    @staticmethod
+    def justify(d):
+        return f"_nj.{d:02}"
+
+    @staticmethod
+    def box_width(w):
+        return f"_nbw.{w:02}" if w != OVER else "_nbw.x"
+
+    @staticmethod
+    def box_height(h):
+        return f"_nbh.{h:02}" if h != OVER else "_nbh.x"
+
+    @staticmethod
+    def layer_seg(h, c):  # a segment's layer while its height is known
+        return f"_nls.{h:02}.{c}" if h != OVER else "_nls.x.0"
+
+    @staticmethod
+    def layer_one(h):
+        return f"_nlo.{h:02}" if h != OVER else "_nlo.x"
+
+    @staticmethod
+    def layer_two(h):
+        return f"_nlq.{h:02}" if h != OVER else "_nlq.x"
+
+    # -- what stays, by depth --
+    @staticmethod
+    def seg_layer(d, h, c):  # waiting for the slot (the height of its row)
+        return f"_nls{d}.{h:02}.{c}"
+
+    # A layer, once its size and slot (or box) are known, is two placeholders
+    # waiting for the level: where its first row hangs (top) and where its
+    # last row stands (bottom), each keyed by what its height depends on.
+    @staticmethod
+    def seg_top(d, h, c, r):  # a segment of c rows, h units high, in a slot r high
+        return f"_nlt{d}.{r:02}.{h:02}.{c}"
+
+    @staticmethod
+    def seg_bottom(d, c, spare):  # spare: the slot's free units
+        return f"_nlb{d}.{c}.{spare:02}"
+
+    @staticmethod
+    def ovl_top(d, layer, h, spare):  # an operand h units high, the box's free units
+        return f"_nlu{d}.{layer}.{h:02}.{spare:02}"
+
+    @staticmethod
+    def ovl_bottom(d, layer, spare):
+        return f"_nlw{d}.{layer}.{spare:02}"
+
+    @staticmethod
+    def xv(d, w, level=None):  # the cell of a box in its row
+        return f"_nX{d}.{w:02}" + ("" if level is None else f".{level}")
+
+    @staticmethod
+    def box_end(d):
+        return f"_nE{d}"
+
+    @staticmethod
+    def cluster_start(d):
+        return f"_ncs{d}"
+
+    @staticmethod
+    def cluster_end(d):
+        return f"_nce{d}"
+
+    @staticmethod
+    def row(d, m, level=None):
+        return f"_nR{d}.{m:02}" + ("" if level is None else f".{level}")
+
+    @staticmethod
+    def last_row(d):
+        return f"_nL{d}"
+
+    @staticmethod
+    def top(d, layer, y):  # layer 1: a segment or an overlay's first operand
+        return f"_nVt{d}.{layer}.{y:04}"
+
+    @staticmethod
+    def bottom(d, layer, y):
+        return f"_nVb{d}.{layer}.{y:04}"
+
+    # -- families --
+    def widths(self):
+        return range(1, self.max_cell[0] + 1)
+
+    def cell_widths(self):
+        """The widths a cell of a box can have: those of the signs, and at
+        depth 2 those of a box inside a box."""
+        if max(self.depths) > 1:
+            return list(self.widths())
+        return sorted({sign.cell[0] for sign in self.signs.values()})
+
+    def pair_widths(self):  # a row of two cells is at least two half units wide
+        return range(2, self.max_cell[0] + 1)
+
+    def row_heights(self):  # a row above another in a box leaves it at least a unit
+        return range(1, self.max_cell[1])
+
+    def heights(self):
+        return range(1, self.max_cell[1] + 1)
+
+    def slots(self):
+        """(depth, height, rows, slot) of every segment layer that can stand
+        in a row: two rows or more (rows 2 or 3 for three and more)."""
+        return [(d, h, c, r) for d in self.depths for h in range(2, self.max_cell[1] + 1)
+                for c in (2, 3) if c <= h for r in range(h, self.max_cell[1] + 1)]
+
+    def overlays(self):
+        """(depth, layer, height, box height) of every operand of an overlay."""
+        return [(d, layer, h, b) for d in self.depths for layer in (1, 2)
+                for h in self.heights() for b in range(h, self.max_cell[1] + 1)]
+
+    def verticals(self):
+        """{(placeholder of a layer's top or bottom, level): final glyph}."""
+        found = {}
+        for d, h, c, r in self.slots():
+            for k in LEVELS:
+                top, bottom = L.segment_span(c, h, r, L.unit(k))
+                found[(self.seg_top(d, h, c, r), k)] = self.top(d, 1, top)
+                found[(self.seg_bottom(d, c, r - h), k)] = self.bottom(d, 1, bottom)
+        for d, layer, h, b in self.overlays():
+            for k in LEVELS:
+                top, bottom = L.overlay_span(h, b, L.unit(k))
+                found[(self.ovl_top(d, layer, h, b - h), k)] = self.top(d, layer, top)
+                found[(self.ovl_bottom(d, layer, b - h), k)] = self.bottom(d, layer, bottom)
+        return found
+
+    def leveled(self):
+        """{level-0 placeholder: [its glyph at each level]}, the glyphs that
+        take the level of their group after the flat stages (and the layers,
+        verticals())."""
+        found = {}
+        for d in self.depths:
+            for w in self.widths():
+                found[self.xv(d, w)] = [self.xv(d, w, k) for k in LEVELS]
+            for m in self.heights():
+                if m in self.row_heights():
+                    found[self.row(d, m)] = [self.row(d, m, k) for k in LEVELS]
+        return found
+
+    def markers(self):
+        """Every empty mark of this section (the run start is a base)."""
+        found = [self.pending(c) for c in CONTROLS] + [self.flat(t) for t in SEG_TYPES[5:]]
+        found += [self.tagged(t, s) for t, s in self.checked] + [self.dead(c) for c in CONTROLS]
+        found += [self.poisoned] + self.tokens()
+        widths, heights = [*self.widths(), OVER], [*self.heights(), OVER]
+        found += [self.cell_width(a) for a in self.cell_widths()] + [self.cell_height(b) for b in self.heights()]
+        found += [self.width_sum(a, s) for a in self.cell_widths() for s in [*range(a, self.max_cell[0] + 1), OVER]]
+        found += [self.height_max(m) for m in self.heights()]
+        found += [self.row_height0, self.row_width0, self.row_widtho, self.row_carrier0,
+                  self.box_width0, self.box_height0, self.box_end0,
+                  self.layer_seg0, self.layer_one0, self.layer_two0]
+        found += [self.row_m(m) for m in self.heights()]
+        found += [self.row_sum(m, t) for m in self.heights() for t in [*range(m, self.max_cell[1] + 1), OVER]]
+        found += [self.row_width(s) for s in widths] + [self.row_pair(s) for s in self.pair_widths()]
+        found += [self.carrier(g) for g in widths] + [self.justify(d) for d in range(1, L.MAX_JUSTIFY + 1)]
+        found += [self.box_width(w) for w in widths] + [self.box_height(h) for h in heights]
+        found += [self.layer_seg(h, c) for h in range(2, self.max_cell[1] + 1) for c in (2, 3) if c <= h]
+        found += [self.layer_seg(OVER, 0)]
+        found += [self.layer_one(h) for h in heights] + [self.layer_two(h) for h in heights]
+        found += [self.seg_layer(d, h, c) for d in self.depths for h in range(2, self.max_cell[1] + 1)
+                  for c in (2, 3) if c <= h]
+        found += sorted({name for name, _ in self.verticals()})
+        for d in self.depths:
+            found += [self.box_end(d), self.cluster_start(d), self.cluster_end(d), self.last_row(d)]
+        for name, names in self.leveled().items():
+            found += [name, *names]
+        found += sorted(set(self.verticals().values()))
+        return list(dict.fromkeys(found))
+
+
+def add_nesting(font, nesting):
+    """Add the glyphs of segments and overlay. Returns the run start, the
+    only base, for the glyph order."""
+    font.addGlyph(Glyph(nesting.run_start, width=0))
+    font.addGlyph(Glyph(nesting.bad_start, width=0))
+    for name in nesting.markers():
+        font.addGlyph(Glyph(name, width=0))
+    return [nesting.run_start, nesting.bad_start]
+
+
+# --- Insertion at middle, top and bottom (layout section 9) ------------------
+
+SIDE_TAGS = {L.MIDDLE_INSERT: "m", L.TOP_INSERT: "t", L.BOTTOM_INSERT: "b"}
+
+
+class SideInserts:
+    """Glyphs of side insertion, as Inserts has them for the corners (no
+    bird shrinks here): a candidate per control and shape, the zone of the
+    base as two markers, the mark of the control, shape and seat (rule S4)
+    that hangs from the base, and the end of the block."""
+
+    zone_done, cluster_end = "_szx", "_sye"
+
+    def __init__(self, signs):
+        self.signs = signs
+        self.insertable = sorted(signs)
+        self.shape = {c: L.shape_of(signs[c]) for c in self.insertable}
+        self.size = {(c, k): L.side_size(signs[c], k) for c in self.insertable for k in L.SIDE_LEVELS}
+        self.zones, self.anchors = {}, defaultdict(set)  # (base, control, shape): Zone / {seat}
+        fits = {}  # (zone width, height, shape): {sign: level}
+        for base in sorted(signs):
+            for control in L.SIDES:
+                for shape, zone in signs[base].corners[control][0].items():
+                    if not zone.width:
+                        continue
+                    key = (zone.width, zone.height, shape, control == L.MIDDLE_INSERT)
+                    if key not in fits:
+                        fits[key] = {}
+                        for c in self.insertable:
+                            if self.shape[c] != shape or not L.side_insertable(control, signs[c]):
+                                continue
+                            for k in L.side_levels(control):
+                                w, h = self.size[(c, k)]
+                                if w <= zone.width and h <= zone.height:
+                                    fits[key][c] = k
+                                    break
+                    if fits[key]:
+                        self.zones[(base, control, shape)] = zone
+                        self.anchors[(base, control, shape)] = {
+                            L.side_seat(control, signs[c], k) for c, k in fits[key].items()}
+        self.widths = sorted({zone.width for zone in self.zones.values()})
+        self.heights = sorted({zone.height for zone in self.zones.values()})
+        self.shapes = sorted(L.SHAPES)
+        self.mark_sizes = sorted({(control, shape, x) for (_, control, shape), xs in self.anchors.items() for x in xs})
+
+    @staticmethod
+    def candidate(control):
+        return f"{control_name(control)}.ins"
+
+    @staticmethod
+    def shaped(control, shape):
+        return f"{control_name(control)}.ins.{shape}"
+
+    @staticmethod
+    def zone_width(width):
+        return f"_szw.{width}"
+
+    @staticmethod
+    def zone_height(height):
+        return f"_szh.{height}"
+
+    @staticmethod
+    def mark(control, shape, seat):
+        return f"_sn.{SIDE_TAGS[control]}.{shape}.{seat}"
+
+    def candidates(self):
+        return ([self.candidate(c) for c in L.SIDES]
+                + [self.shaped(c, s) for c in L.SIDES for s in self.shapes])
+
+    def marks(self):
+        return [self.mark(c, s, x) for c, s, x in self.mark_sizes]
+
+    def markers(self):
+        return ([self.zone_width(w) for w in self.widths] + [self.zone_height(h) for h in self.heights]
+                + [self.zone_done, self.cluster_end] + self.marks())
+
+
+def add_side_insertion(font, sides):
+    """Add the glyphs of side insertion. Returns the candidates (they have
+    the advance of the box), for the glyph order."""
+    for name in sides.candidates():
+        glyph = Glyph(name, width=L.CONTROL_ADVANCE)
+        glyph.components.append(Component(FALLBACK))
+        font.addGlyph(glyph)
+    for name in sides.markers():
+        font.addGlyph(Glyph(name, width=0))
+    return sides.candidates()
+
+
+# --- Enclosures (layout section 10) -------------------------------------------
 
 class Enclosures:
     """Glyphs of enclosures and what the features need to know.
@@ -497,12 +966,15 @@ class Enclosures:
         widest = L.advance(L.MAX_WIDTH, L.half_unit(0))  # the widest cluster there is
         self.counts = range(1, L.merlon_count(widest, rings) + 1)
         self.enclosable = L.enclosable(signs)
+        self.side_enclosable = L.side_enclosable(signs)  # layout section 9
         # {base glyph of an insertion that rule E4 moves inside an enclosure:
         # (how far, code point, level)}
         self.moved = {}
-        for (base, level), fits in sorted(self.enclosable.items()):
+        fitting = {key for key, fits in self.enclosable.items() if fits}
+        fitting |= {(base, 0) for (base, _), fits in self.side_enclosable.items() if fits}
+        for base, level in sorted(fitting):
             move = L.lift_in_enclosure(signs[base])
-            if fits and move:
+            if move:
                 self.moved[signs[base].name + (f".shrink{level}" if level else "")] = (move, base, level)
 
     # -- names --
@@ -667,7 +1139,7 @@ def add_enclosures(font, enclosures):
     return e.bases()
 
 
-# --- Sign modifiers (layout section 9) ----------------------------------------
+# --- Sign modifiers (layout section 11) ---------------------------------------
 
 class Modifiers:
     """Glyphs of mirroring and damage and what the features need to know.
