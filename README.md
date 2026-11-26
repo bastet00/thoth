@@ -4,7 +4,7 @@
 
 ![Five words, ḥtp, nfr, ꜥnḫ, snb and rn: in other fonts each is a row of signs; in Thoth each is one stacked group](documentation/image1.png)
 
-It is named after Thoth (Egyptian *ḏḥwtj*, Djehuty; Arabic تحوت), the god who in Egyptian belief gave people the hieroglyphic script. Google Fonts does not allow script names in a family name, so the name is just "Thoth".
+It is named after Thoth (Egyptian *ḏḥwtj*, Djehuty; Arabic تحوت), the god who in Egyptian belief gave people the hieroglyphic script.
 
 Status: **work in progress** – the font builds and contains the signs, imported from Noto Sans Egyptian Hieroglyphs, and the Latin letters for Egyptological transliteration (ꜣ ꜥ ḥ ḫ ẖ š ṯ ḏ and the rest), taken from Noto Sans (see [Credits](#credits)). It draws groups with Unicode's Egyptian hieroglyph format controls: the joiners, insertions, overlay, one level of nested groups, enclosures such as the cartouche, mirrored signs and damage shading (see the table below). Common groups also stack in plain text without any control (see below). Right-to-left runs are not supported yet.
 
@@ -74,4 +74,4 @@ The sign outlines of the Egyptian Hieroglyphs block come from [Noto Sans Egyptia
 
 ## License
 
-[SIL Open Font License 1.1](OFL.txt). Google Fonts accepts only OFL fonts and does not allow a Reserved Font Name, so don't add one.
+[SIL Open Font License 1.1](OFL.txt). 
