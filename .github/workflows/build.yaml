@@ -22,11 +22,13 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - name: Set up Python 3.11
+      # The tests look signs up by Unicode name, so Python's Unicode data must
+      # know every sign in the font (V011D needs Unicode 15). Match the local venv.
+      - name: Set up Python 3.14
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         id: python
         with:
-          python-version: "3.11"
+          python-version: "3.14"
       - name: Setup fontspector
         uses: fonttools/setup-fontspector@d53404291dc78a5a41cf76ea48e1d13a731fb812 # main
         env:
@@ -86,8 +88,8 @@ jobs:
 
   deploy:
     name: Deploy results to GitHub Pages
-    # GitHub Pages is not available while the repository is private.
-    if: ${{ github.ref_name == github.event.repository.default_branch && !github.event.repository.private }}
+    # Runs only once GitHub Pages is enabled in the repository settings.
+    if: ${{ github.ref_name == github.event.repository.default_branch && github.event.repository.has_pages }}
     needs: build
     runs-on: ubuntu-latest
     permissions:
