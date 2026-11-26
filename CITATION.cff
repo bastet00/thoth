@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use the Thoth font, please cite it as below."
+type: software
+title: "Thoth: An Egyptian Hieroglyph Font That Stacks Signs"
+authors:
+  - name: "Amro Abdalla"
+publisher:
+  name: "Bastet"
+license: OFL-1.1
+url: "https://bastet-app.com/blog/en/thoth-hieroglyph-font"
+repository-code: "https://github.com/bastet00/thoth"
+keywords:
+  - font
+  - Egyptian hieroglyphs
+  - Unicode
+  - OpenType
