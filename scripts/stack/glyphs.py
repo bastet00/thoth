@@ -173,6 +173,13 @@ class Names:
             self._inserts = Inserts(self.signs)
         return self._inserts
 
+    @property
+    def modifiers(self):
+        """The glyphs and data of the sign modifiers (Modifiers)."""
+        if not hasattr(self, "_modifiers"):
+            self._modifiers = Modifiers(self)
+        return self._modifiers
+
     # -- the vertical state of a group --
     @staticmethod
     def row_counts(height):
@@ -658,3 +665,198 @@ def add_enclosures(font, enclosures):
                 pen.closePath()
         font.addGlyph(glyph)
     return e.bases()
+
+
+# --- Sign modifiers (layout section 9) ----------------------------------------
+
+class Modifiers:
+    """Glyphs of mirroring and damage and what the features need to know.
+
+    A sign followed by its modifiers gets a marker after it (_mk), which
+    takes the modifiers into one glyph by ligature, so that they are one
+    cluster with the sign: _mir (mirrored), _dm.q (damaged, q the quarters)
+    or _md.q (both, later _mir and _dm.q). These and the size markers below
+    are of the ligature class, which every other lookup ignores, so the
+    stacking rules see the sign alone. A damaged sign gets two size markers,
+    its cell's width (_dw.a) and height (_dh.b), from its lone glyph; once
+    its level is known they become its quarters in tiles (_hn.v, _hm.w,
+    then one glyph _hs.v.w), and each damaged quarter adds a piece of
+    shading (_ht.q.v.w), a mark hung from the middle of the cell. Mirrored
+    signs: the lone glyph, the variant at each of MIRROR_LEVELS and the
+    shrunk bird, each one component of the sign flipped across. A damage
+    modifier that is not part of a literal shows the fallback box.
+    """
+
+    marker, mirror, mirror_box = "_mk", "_mir", "_mir.box"
+
+    def __init__(self, names):
+        signs = names.signs
+        self.names, self.signs = names, signs
+        self.hieroglyphs = [c for c in sorted(signs) if c in L.HIEROGLYPHS]
+        self.mirrored = [c for c in self.hieroglyphs if not L.symmetric(c)]
+        self.symmetric = [c for c in self.hieroglyphs if L.symmetric(c)]
+        self.levels = list(L.MIRROR_LEVELS)
+        mirrored = set(self.mirrored)
+        self.shrunk = [(c, k) for c, k in names.inserts.shrunk_glyphs if c in mirrored]
+        self.quarters = [L.quadrants(c) for c in L.DAMAGE]
+        self.cell_widths = sorted({signs[c].cell[0] for c in self.hieroglyphs})
+        self.cell_heights = sorted({signs[c].cell[1] for c in self.hieroglyphs})
+        # (across, up) in tiles of every quarter a sign can have, at any level
+        self.sizes = sorted({L.damage_size(signs[c], k)[:2] for c in self.hieroglyphs
+                             for k in range(len(L.LEVEL_HEIGHTS))})
+        self.across = sorted({v for v, _ in self.sizes})
+        self.up = sorted({w for _, w in self.sizes})
+
+    # -- names --
+    def lone(self, codepoint):
+        return f"{self.signs[codepoint].name}.m"
+
+    def variant(self, codepoint, level):  # sorts after the variants of its level, as a block
+        return f"_{level}m.{self.signs[codepoint].name}"
+
+    def shrunk_glyph(self, codepoint, level):
+        return f"{self.names.inserts.shrunk(codepoint, level)}.m"
+
+    @staticmethod
+    def both(q):
+        return f"_md.{q}"
+
+    @staticmethod
+    def damaged(q):
+        return f"_dm.{q}"
+
+    @staticmethod
+    def width(a):  # the cell's width in half units, then in tiles
+        return f"_dw.{a}" if a else "_dw.0"
+
+    @staticmethod
+    def height(b):
+        return f"_dh.{b}" if b else "_dh.0"
+
+    @staticmethod
+    def across_tiles(v):
+        return f"_hn.{v}"
+
+    @staticmethod
+    def up_tiles(w):
+        return f"_hm.{w}"
+
+    @staticmethod
+    def size(v, w):
+        return f"_hs.{v}.{w}"
+
+    @staticmethod
+    def piece(q, v, w):
+        return f"_ht.{q}.{v}.{w}"
+
+    @staticmethod
+    def stray(codepoint):  # a damage modifier as typed: the box
+        return control_name(codepoint)
+
+    # -- families --
+    def mirrored_variants(self, codepoint, level):
+        """The mirrored variant of a sign at a level, as a list (empty if none)."""
+        return [self.variant(codepoint, level)] if level in self.levels and codepoint in self._mirrored else []
+
+    @property
+    def _mirrored(self):
+        if not hasattr(self, "_mirrored_set"):
+            self._mirrored_set = set(self.mirrored)
+        return self._mirrored_set
+
+    def pieces(self):
+        return [self.piece(q, v, w) for q in L.QUADRANTS for v, w in self.sizes]
+
+    def markers(self):
+        """Empty glyphs of the ligature class."""
+        return ([self.marker, self.mirror] + [self.both(q) for q in self.quarters]
+                + [self.damaged(q) for q in self.quarters]
+                + [self.width(a) for a in [0, *self.cell_widths]] + [self.height(b) for b in [0, *self.cell_heights]]
+                + [self.across_tiles(v) for v in self.across] + [self.up_tiles(w) for w in self.up]
+                + [self.size(v, w) for v, w in self.sizes])
+
+    def bases(self):
+        """Glyphs with an advance: mirrored lone signs and birds, and the boxes."""
+        return ([self.lone(c) for c in self.mirrored] + [self.shrunk_glyph(c, k) for c, k in self.shrunk]
+                + [self.stray(c) for c in L.DAMAGE])
+
+    def marks(self):
+        """Mirrored variants and the pieces of shading."""
+        return [self.variant(c, k) for k in self.levels for c in self.mirrored] + self.pieces() + [self.mirror_box]
+
+
+def _hatch(pen, rect):
+    """Rule M7 of layout.py: the lines of shading inside rect, in the
+    coordinates of the middle point; each line, cut to rect, one contour."""
+    x0, y0, x1, y1 = rect
+    half = L.HATCH_STROKE // 2
+    first = (x0 - y1 - half) // L.HATCH_PERIOD - 1
+    last = (x1 - y0 + half) // L.HATCH_PERIOD + 1
+    for k in range(first, last + 1):
+        low, high = k * L.HATCH_PERIOD - half, k * L.HATCH_PERIOD + half  # low <= x - y <= high
+        polygon = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]  # counter-clockwise
+        for inside, cross in ((lambda x, y: x - y >= low, low), (lambda x, y: x - y <= high, high)):
+            clipped = []
+            for i, (p, q) in enumerate(zip(polygon, polygon[1:] + polygon[:1])):
+                if inside(*p):
+                    clipped.append(p)
+                if inside(*p) != inside(*q):  # the edge crosses x - y = cross
+                    if p[0] == q[0]:
+                        clipped.append((p[0], p[0] - cross))
+                    else:
+                        clipped.append((p[1] + cross, p[1]))
+            polygon = [p for i, p in enumerate(clipped) if p != clipped[i - 1]] if clipped else []
+        if len(polygon) >= 3:
+            area = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(polygon, polygon[1:] + polygon[:1]))
+            if area > 0:
+                pen.moveTo(polygon[0])
+                for point in polygon[1:]:
+                    pen.lineTo(point)
+                pen.closePath()
+
+
+def add_modifiers(font, names):
+    """Add the glyphs of the sign modifiers. Returns those with an advance,
+    for the glyph order; the rest come last, sorted by name."""
+    m = names.modifiers
+    for codepoint in m.mirrored:
+        sign = names.signs[codepoint]
+        glyph = Glyph(m.lone(codepoint), width=sign.advance)
+        glyph.components.append(Component(sign.name, (-1, 0, 0, 1, sign.box[0] + sign.box[2], 0)))
+        font.addGlyph(glyph)
+    for codepoint, level in m.shrunk:
+        sign = names.signs[codepoint]
+        scale, x, y = L.shrink(sign.box, level)
+        offset = (x + L._round(scale * (sign.box[0] + sign.box[2])), L._round(y + sign.lift - scale * sign.lift))
+        glyph = Glyph(m.shrunk_glyph(codepoint, level), width=sign.advance)
+        glyph.components.append(Component(sign.name, (-scale, 0, 0, scale, *offset)))
+        font.addGlyph(glyph)
+    for codepoint in L.DAMAGE:
+        glyph = Glyph(m.stray(codepoint), width=L.CONTROL_ADVANCE, unicodes=[codepoint])
+        glyph.components.append(Component(FALLBACK))
+        font.addGlyph(glyph)
+    for level in m.levels:  # as add_stacking() places the variant, flipped across
+        for codepoint in m.mirrored:
+            sign = names.signs[codepoint]
+            scale = sign.scales[level]
+            dx, dy = L.sign_offset(sign, level)
+            offset = (dx + L._round(scale * (sign.box[0] + sign.box[2])), L._round(dy - scale * sign.lift))
+            glyph = Glyph(m.variant(codepoint, level), width=0)
+            glyph.components.append(Component(sign.name, (-scale, 0, 0, scale, *offset)))
+            font.addGlyph(glyph)
+    turned = {8: 1, 2: 4}  # a bottom piece is the top piece across from it, turned half round
+    for q in L.QUADRANTS:
+        for v, w in m.sizes:
+            glyph = Glyph(m.piece(q, v, w), width=0)
+            if q in turned:
+                glyph.components.append(Component(m.piece(turned[q], v, w), (-1, 0, 0, -1, 0, 0)))
+            else:
+                _hatch(glyph.getPen(), L.hatch_rect(L.hatch_code(q, v, w)))
+            font.addGlyph(glyph)
+    glyph = Glyph(m.mirror_box, width=0)  # rule M8
+    box = L.mirror_box(0, 0)
+    glyph.components.append(Component(FALLBACK, (box.scale, 0, 0, box.scale, box.x, box.y)))
+    font.addGlyph(glyph)
+    for name in m.markers():
+        font.addGlyph(Glyph(name, width=0))
+    return m.bases()

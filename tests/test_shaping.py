@@ -54,14 +54,14 @@ ENCLOSURES = glyphs.Enclosures(SIGNS, L.ring_table(SOURCE, SIGNS))  # layout sec
 V, H = L.VERTICAL_JOINER, L.HORIZONTAL_JOINER
 FALLBACK = "control.fallback"
 
-# Limits for the budget test, set from the build with the automatic layer,
-# its own-word table and the shape rule (12,604 glyphs, 1,215,360 bytes TTF,
-# 436,216 bytes WOFF2; without the shape rule 12,602, 1,213,596 and 434,888;
-# without the layer 12,594, 1,184,664 and 427,992; without corner insertion
-# 12,398, 1,083,928 and 392,620) with a little room.
-# Enclosures (layout section 8) add 264 glyphs, 70,320 bytes TTF and 21,524
-# bytes WOFF2: 12,868 glyphs, 1,285,684 and 457,576.
-MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 12_950, 1_300_000, 465_000
+# Limits for the budget test, set from the build with enclosures and sign
+# modifiers (MEASURED) with a little room. Before: the base (d0898e3) 12,604
+# glyphs, 1,215,364 bytes TTF, 435,736 bytes WOFF2; without the shape rule
+# 12,602, 1,213,596 and 434,888; without the automatic layer 12,594,
+# 1,184,664 and 427,992; without corner insertion 12,398, 1,083,928 and
+# 392,620. Enclosures (section 8) alone add 264 glyphs and about 70 KB TTF,
+# the sign modifiers (section 9) alone 5,057 glyphs and about 333 KB TTF.
+MAX_GLYPHS, MAX_TTF, MAX_WOFF2 = 18_100, 1_700_000, 540_000
 
 # Egyptological transliteration, beyond the basic Latin set.
 TRANSLITERATION = [
@@ -175,6 +175,16 @@ class Shaper:
         self.frames = {ENCLOSURES.frame_name(part): part for part in enclosure_parts()}
         self.spacers = {ENCLOSURES.spacer(cell) for cell in ENCLOSURES.cells}
 
+
+        # section 9: mirrored signs (drawn as their sign, flipped), the boxes
+        # of stray damage modifiers, pieces of shading, the small mirror box
+        m = NAMES.modifiers
+        self.mirrored = {m.lone(c): (c, None) for c in m.mirrored}
+        self.mirrored.update({m.variant(c, k): (c, k) for c in m.mirrored for k in m.levels})
+        self.mirrored.update({m.shrunk_glyph(c, k): (c, k) for c, k in m.shrunk})
+        self.boxes.update({m.stray(c): c for c in L.DAMAGE})
+        self.pieces = {m.piece(q, v, w): L.hatch_code(q, v, w) for q in L.QUADRANTS for v, w in m.sizes}
+
     def shape(self, codepoints, level=hb.BufferClusterLevel.MONOTONE_CHARACTERS, tracking=0):
         """[(glyph, cluster, x, y, advance)], x from the start of the line;
         each script run shaped on its own, clusters as code point indices.
@@ -210,6 +220,12 @@ class Shaper:
             return self.boxes[name], None
         if name in self.shrunk:  # a bird drawn smaller for an insertion
             return self.shrunk[name]
+        if name in self.mirrored:
+            return self.mirrored[name]
+        if name in self.pieces:
+            return self.pieces[name], None
+        if name == NAMES.modifiers.mirror_box:
+            return L.MIRROR, None
         return None
 
     def compare(self, codepoints):
@@ -219,7 +235,7 @@ class Shaper:
         if 0x25CC not in codepoints and any(g[0] == NAMES.dotted_circle for g in shaped):
             problems.append("a dotted circle appeared")
         clusters = L.layout(codepoints, SIGNS, self.table)
-        implied = L.automatic(codepoints, self.table) if self.table else (codepoints, range(len(codepoints)))
+        implied = L.implied_text(codepoints, self.table)
         covered = {i for c in clusters for i in range(c.start, c.end)}
         for name, cluster, *_ in shaped:
             if self.drawn(name) and cluster not in covered:
@@ -235,6 +251,7 @@ class Shaper:
                 problems.append(f"cluster at {c.start}: advance {advance}, reference {c.advance}")
             seen = [(self.drawn(shaped[i][0]), shaped[i][2] - pen, shaped[i][3], shaped[i][4])
                     for i in mine if self.drawn(shaped[i][0])]
+            self.drawn_names = [shaped[i][0] for i in mine if self.drawn(shaped[i][0])]
             for i in mine:
                 name, _, _, _, glyph_advance = shaped[i]
                 if (not self.drawn(name) and not name.startswith("Q.") and glyph_advance
@@ -251,6 +268,22 @@ class Shaper:
             run = [t for t, o in zip(*implied) if c.start <= o < c.end]  # with the implied controls
             inserted = c.stacked and L.is_insertion(run) and L.insertion(*run, SIGNS) is not None
             for index, (((codepoint, level), x, y, glyph_advance), glyph) in enumerate(zip(seen, c.glyphs)):
+                if L.is_hatch(glyph.codepoint) or (glyph.codepoint == L.MIRROR and glyph.scale == L.MIRROR_BOX):
+                    # section 9: a piece of shading or the small mirror box,
+                    # drawn from the point it hangs from
+                    box = L.mirror_box(0, 0) if glyph.codepoint == L.MIRROR else L.Glyph(0, 0, 0, 0, 1.0)
+                    if codepoint != glyph.codepoint or (x, y) != (glyph.x - box.x, glyph.y - box.y):
+                        problems.append(f"{codepoint:X} at {(x, y)}, reference {glyph.codepoint:X} at "
+                                        f"{(glyph.x - box.x, glyph.y - box.y)}")
+                    continue
+                if (glyph.scale < 0) != (self.drawn_names[index] in self.mirrored):
+                    problems.append(f"U+{codepoint:X}: mirrored {self.drawn_names[index] in self.mirrored}, "
+                                    f"reference {glyph.scale < 0}")
+                    continue
+                # a mirrored glyph is flipped across the middle of its ink (rule M4)
+                turn = L._round(-glyph.scale * (SIGNS[codepoint].box[0] + SIGNS[codepoint].box[2])) \
+                    if glyph.scale < 0 else 0
+                glyph = glyph._replace(x=glyph.x - turn, scale=abs(glyph.scale))
                 # the base of an insertion is its lone glyph, or at a level its shrunk glyph
                 lone = not c.stacked or (inserted and index == 0 and not glyph.level)
                 if codepoint != glyph.codepoint or (None if lone else glyph.level) != level:
@@ -353,7 +386,7 @@ def shape_simple(shaper, text):
 
 def test_cmap(shaper):
     cmap = shaper.font.getBestCmap()
-    wanted = [*unicodes_per_glyphset("GF_Latin_Core"), *TRANSLITERATION, *glyphs.CONTROLS]
+    wanted = [*unicodes_per_glyphset("GF_Latin_Core"), *TRANSLITERATION, *glyphs.CONTROLS, *L.DAMAGE]
     for codepoint in wanted:
         check(codepoint in cmap, f"U+{codepoint:04X} is not in cmap")
 
@@ -863,6 +896,136 @@ def test_enclosures(shaper):
           f"with calt off {off_count}, {off_failed} differ")
 
 
+
+# --- sign modifiers: mirroring and damage (layout section 9) -----------------
+#
+# Golden lines of the font (glyphs that draw, (glyph, x, y), and the line's
+# advance), written here; then every damage modifier on signs of different
+# shapes, alone and in groups, every mirrored sign, modifiers in insertions
+# and in plain text that stacks automatically, malformed modifiers, and
+# seeded random text, each compared with the reference glyph by glyph,
+# which includes one cluster per group with its modifiers (compare()).
+MIR = 0x13440
+DMG = {name: 0x13446 + q for q, name in enumerate(
+    "ts bs s te t bste st be tsbe b sb e te_e be_e all".split(), 1)}  # the fifteen, by the quarters they name
+MODIFIER_WORDS = {
+    # a lone sign mirrored: the sign flipped across the middle of its ink
+    "A1<13440>": (898, [("u13000.m", 0, 0)]),
+    # mirrored in a group: the variant flipped, at the same place
+    "G43<13440>:N35": (922, [("_2m.u13171", 461, 249), ("_2.u13216", 461, 27)]),
+    "G43:N35": (922, [("_2.u13171", 461, 249), ("_2.u13216", 461, 27)]),
+    # level 4 has no mirrored variants: the sign, and the small box over the middle of its cell
+    "A1<13440>:O1": (820, [("_4.u13000", 410, 432), ("_mir.box", 410, 756), ("_4.u13250", 410, 0)]),
+    "D21<13440>:N35": (1234, [("_0.u1308B", 617, 599), ("_0.u13216", 617, 121)]),  # symmetric: as it is
+    "G43<13440>-X1:N35": (2094, [("u13171.m", 0, 0), ("_0.u133CF", 1477, 599), ("_0.u13216", 1477, 121)]),
+    # damage: shading over the named quarters of the cell, from its middle
+    "A1<13455>": (898, [("u13000", 0, 0), ("_ht.1.10.12", 449, 540), ("_ht.2.10.12", 449, 540),
+                        ("_ht.4.10.12", 449, 540), ("_ht.8.10.12", 449, 540)]),
+    "D21<13450>:N35": (1234, [("_0.u1308B", 617, 599), ("_ht.2.13.4", 617, 779), ("_ht.8.13.4", 617, 779),
+                              ("_0.u13216", 617, 121)]),
+    "A1<13440><13447>": (898, [("u13000.m", 0, 0), ("_ht.1.10.12", 449, 540)]),
+}
+MODIFIER_MALFORMED = [  # the stray modifier keeps its box (rule M3)
+    "<13440>", "<13447>", "<13440>A1", "<13447>A1", "A1<13440><13440>", "A1<13447><13447>", "A1<13447><13440>",
+    "<13441><13440>", "<13443><13447>", 'A1"\u200d"<13440>', 'A1"\u200c"<13447>', 'A1<13440>"\u200d"<13447>',
+    "A1:<13440>O1", "A1<13430><13447>", "A1<13440><13434>X1", "<13437>A1<13440><13438>",
+    'A1" "<13440>', "A1<13440><13440>:O1", "A1<13447><13440>:O1", "<13447>D21:N35",
+]
+
+
+def modifier_texts(rng):
+    """Seeded random text with modifiers: groups, insertions, plain text,
+    malformed sequences."""
+    hieroglyphs = [c for c in sorted(SIGNS) if c in L.HIEROGLYPHS]
+    tall = [c for c in hieroglyphs if SIGNS[c].cell[1] >= 10]
+    small = [c for c in hieroglyphs if L.insertable(SIGNS[c])]
+    birds = [c for c in L.BIRDS if c in SIGNS]
+    damage = list(L.DAMAGE)
+
+    def literal(sign):
+        r = rng.random()
+        mods = [MIR] * (r < 0.45) + [rng.choice(damage)] * (0.3 < r < 0.75)
+        return [sign] + mods
+    texts = []
+    for _ in range(700):  # groups of one to four rows, every sign maybe modified
+        rows = [[rng.choice(tall if rng.random() < 0.3 else hieroglyphs) for _ in range(rng.choice((1, 2, 2, 3)))]
+                for _ in range(rng.choice((1, 2, 2, 3, 4)))]
+        text = []
+        for r, row in enumerate(rows):
+            text += [V] * bool(r)
+            for i, sign in enumerate(row):
+                text += [H] * bool(i) + literal(sign)
+        texts.append(text)
+    for _ in range(500):  # insertions: a bird or any sign, a corner, a small sign
+        base = rng.choice(birds if rng.random() < 0.6 else hieroglyphs)
+        texts.append(literal(base) + [rng.choice(list(L.CORNERS))] + literal(rng.choice(small)))
+    known = sorted({c for key in TABLE for c in key if c not in (L.START, L.END)})
+    for _ in range(500):  # plain text the automatic layer stacks, modified
+        text = []
+        for _ in range(rng.randint(1, 8)):
+            r = rng.random()
+            text += literal(rng.choice(known)) if r < 0.75 else [rng.choice((0x20, 0x200C, V, H, 0x13434))]
+        texts.append(text)
+    for _ in range(500):  # anything: signs, modifiers, controls, other characters
+        texts.append([rng.choice(hieroglyphs[:300] + [MIR] * 40 + damage * 4 + [V, H, 0x13434, 0x20, 0x200D,
+                                                                                0xFE00, 0x13441, 0x13444])
+                      for _ in range(rng.randint(1, 9))])
+    return texts
+
+
+def test_modifiers(shaper):
+    for mdc, expected in MODIFIER_WORDS.items():
+        text = encode(mdc)
+        shaped = shaper.shape(text)
+        found = (sum(g[4] for g in shaped), [(g[0], g[2], g[3]) for g in shaped if shaper.drawn(g[0])])
+        check(found == expected, f"{mdc}: {found}, expected {expected}")
+    texts = [encode(mdc) for mdc in list(MODIFIER_WORDS) + MODIFIER_MALFORMED]
+    # every damage modifier on four signs of different shapes (tall, wide,
+    # bird, small), alone, in a group, mirrored, inserted
+    four = [gardiner(g) for g in ("A1", "N35", "G43", "X1")]
+    for d in L.DAMAGE:
+        for sign in four:
+            texts += [[sign, d], [sign, MIR, d], [sign, d, V, gardiner("N35")], [gardiner("D21"), V, sign, d],
+                      [sign, d, H, gardiner("Z1"), d]]
+        texts += [[gardiner("G14"), d, 0x13434, gardiner("X1"), d], [gardiner("G43"), MIR, d, 0x13434, gardiner("X1")]]
+    for c in NAMES.modifiers.mirrored:  # every mirrored sign, alone and in a group of two
+        texts += [[c, MIR], [c, MIR, V, gardiner("N35")]]
+    texts += modifier_texts(random.Random(29))
+    compared, failed = compare_all(shaper, texts)
+    # the stray modifiers of MODIFIER_MALFORMED keep their box
+    for mdc in MODIFIER_MALFORMED:
+        drawn = [g[0] for g in shaper.shape(encode(mdc)) if shaper.drawn(g[0])]
+        check(any(g in shaper.boxes for g in drawn), f"{mdc}: no box for the stray modifier: {drawn}")
+    # the automatic layer: a modified sign stacks as the sign does (rule M2)
+    for plain, explicit in (("D21<13450>-N35", "D21<13450>:N35"), ("R4<13447>-X1-Q3<13440>", "R4<13447>:X1*Q3<13440>"),
+                            ("G14<13440>-X1-B1", "G14<13440>-X1-B1")):
+        found = [(g[0], g[2], g[3]) for g in shaper.shape(encode(plain)) if shaper.drawn(g[0])]
+        reference = [(g[0], g[2], g[3]) for g in shaper.shape(encode(explicit)) if shaper.drawn(g[0])]
+        check(found == reference, f"{plain} typed plainly: {found}, typed with controls: {reference}")
+    off = Shaper(shaper.path, table=None, features={"calt": False})  # the modifiers do not need calt
+    off_count, off_failed = compare_all(off, texts[:400])
+    # the glyphs: a mirrored sign is one component of its sign, flipped
+    glyf, m = shaper.font["glyf"], NAMES.modifiers
+    for name, (codepoint, level) in list(shaper.mirrored.items())[::7]:
+        (component,) = glyf[name].components
+        transform = getattr(component, "transform", [[1, 0], [0, 1]])
+        sign = SIGNS[codepoint]
+        scale = sign.scales[level] if level is not None and name in [m.variant(codepoint, level)] else None
+        check(component.glyphName == sign.name and transform[0][0] < 0 < transform[1][1]
+              and abs(transform[0][0] + transform[1][1]) < 1 / 16384
+              and (scale is None or abs(transform[1][1] - scale) < 1 / 16384), f"{name}: {transform}")
+        flipped, plain = bounds(shaper, name), bounds(shaper, sign.name if level is None else
+                                                      (NAMES.variant(codepoint, level) if name == m.variant(codepoint, level)
+                                                       else NAMES.inserts.shrunk(codepoint, level)))
+        check(all(abs(a - b) <= 2 for a, b in zip(flipped, plain)), f"{name}: ink {flipped}, unmirrored {plain}")
+    for name, code in shaper.pieces.items():  # each piece inside its rectangle
+        box, rect = bounds(shaper, name), L.hatch_rect(code)
+        check(box and rect[0] <= box[0] and rect[1] <= box[1] and box[2] <= rect[2] and box[3] <= rect[3],
+              f"{name}: ink {box} outside {rect}")
+    print(f"  modifiers: {compared} texts compared, {failed} differ; with calt off {off_count}, {off_failed} differ; "
+          f"{len(NAMES.modifiers.mirrored)} mirrored signs, {len(shaper.pieces)} pieces of shading")
+
+
 def glyphs_of(lookup, names):
     """Every glyph name a lookup refers to (coverages, classes, outputs)."""
     found = set()
@@ -893,7 +1056,8 @@ def test_lookups(shaper):
     egyptian = {*shaper.lone, *shaper.boxes, *shaper.variants, FALLBACK, *NAMES.joined.values(),
                 *NAMES.heads(), *NAMES.markers(), *(n for k in glyphs.LEVELS for n in NAMES.leveled(k)),
                 *NAMES.inserts.bases(), *NAMES.inserts.markers(), *AUTOMATIC.markers(),
-                *ENCLOSURES.bases(), *ENCLOSURES.empty_bases(), *ENCLOSURES.marks()}
+                *ENCLOSURES.bases(), *ENCLOSURES.empty_bases(), *ENCLOSURES.marks(),
+                *NAMES.modifiers.bases(), *NAMES.modifiers.marks(), *NAMES.modifiers.markers()}
     shared = {".notdef", "space", NAMES.dotted_circle, NAMES.zwnj, *NAMES.ignorables}
     names = set(shaper.order)
     for tag in ("GSUB", "GPOS"):
@@ -931,11 +1095,114 @@ def test_budget(shaper):
           + (f", WOFF2 {woff2.stat().st_size} bytes" if woff2.exists() else ""))
 
 
+# Enclosures and sign modifiers together (layout sections 8 and 9): golden
+# lines in the form of ENCLOSURE_WORDS, written here, and seeded random text
+# that mixes enclosures (with modified delimiters too), literals, groups,
+# insertions, plain words and stray characters, compared glyph by glyph.
+COMBINED_WORDS = {
+    # Khufu, the first chick mirrored, the viper damaged at top start and bottom end
+    f"V11A{B}Aa1-G43<13440>-I9<1344F>-G43{E}V11B": (
+        5000, [("_0.u1340D", 964, 0), ("_0m.u13171", 1748, 0), ("_0.u13191", 2847, 315), ("_ht.1.14.5", 2847, 540),
+               ("_ht.8.14.5", 2847, 540), ("_0.u13171", 3946, 0)],
+        [("u13379.ring", 0, 0), ("_el.p.512.s", 617, 0), ("_el.p.512.e", 1311, 0), ("_el.p.512.s", 1311, 0),
+         ("_el.p.512.e", 2185, 0), ("_el.p.1024.s", 2185, 0), ("_el.p.1024.e", 3509, 0), ("_el.p.512.s", 3509, 0),
+         ("_el.p.512.e", 4383, 0), ("u1337A.ring", 4383, 0)]),
+    # a damaged sign in a stacked group inside a walled enclosure
+    f"O36C{BW}D21<13450>:N35{EW}O36D": (
+        2514, [("_0.u1308B", 1257, 599), ("_ht.2.13.4", 1257, 779), ("_ht.8.13.4", 1257, 779), ("_0.u13216", 1257, 121)],
+        [("u13288.ring", 0, 0), ("_el.w.1024.s", 640, 0), ("_el.w.1024.e", 1874, 0), ("_em.w.8", 1257, 0),
+         ("u13289.ring", 1874, 0)]),
+    # modifiers on the delimiters: the enclosure forms, they draw nothing
+    f"V11A<13440>{B}Aa1{E}V11B<13455>": (
+        1928, [("_0.u1340D", 964, 0)],
+        [("u13379.ring", 0, 0), ("_el.p.512.s", 617, 0), ("_el.p.512.e", 1311, 0), ("u1337A.ring", 1311, 0)]),
+    # the chick mirrored and damaged, the bread in its (swapped) corner: the
+    # block moved up by 13, the shading with it
+    f"V11A{B}G43<13440><13449><13432>X1{E}V11B": (
+        2094, [("u13171.shrink1.m", 617, 13), ("_ht.1.8.10", 1047, 462), ("_ht.2.8.10", 1047, 462),
+               ("_3.u133CF", 846, 782)],
+        [("u13379.ring", 0, 0), ("_el.p.512.s", 617, 0), ("_el.p.512.e", 1477, 0), ("u1337A.ring", 1477, 0)]),
+}
+
+
+def combined_texts(rng, count):
+    """Seeded random text with enclosures and modifiers (see above)."""
+    hieroglyphs = [c for c in sorted(SIGNS) if c in L.HIEROGLYPHS]
+    small = [c for c in hieroglyphs if L.insertable(SIGNS[c])]
+    birds = [c for c in L.BIRDS if c in SIGNS]
+    known = sorted({c for key in TABLE for c in key if c not in (L.START, L.END)})
+
+    def literal(sign):
+        r = rng.random()
+        return [sign] + [MIR] * (r < 0.35) + [rng.choice(L.DAMAGE)] * (0.25 < r < 0.6)
+
+    def part():
+        r = rng.random()
+        if r < 0.3:
+            return literal(rng.choice(hieroglyphs))
+        if r < 0.55:
+            out = []
+            for i in range(rng.randint(1, 3)):
+                out += [V] * bool(i)
+                for j in range(rng.randint(1, 2)):
+                    out += [H] * bool(j) + literal(rng.choice(hieroglyphs))
+            return out
+        if r < 0.7:
+            return literal(rng.choice(birds + small)) + [rng.choice(list(L.CORNERS))] + literal(rng.choice(small))
+        if r < 0.88:  # plain text the automatic layer stacks
+            return [c for _ in range(rng.randint(2, 4)) for c in literal(rng.choice(known))]
+        return [rng.choice((V, H, 0x13437, 0x20, 0x200D, MIR, rng.choice(L.DAMAGE), 0x1343C, 0x1343D, 0xFE00))]
+    texts = []
+    for _ in range(count):
+        text = [c for _ in range(rng.randint(0, 1)) for c in part()]
+        plain = rng.random() < 0.6
+        if rng.random() < 0.85:
+            text += literal(rng.choice(L.OPENINGS)) if rng.random() < 0.3 else [rng.choice(L.OPENINGS)]
+        text.append(0x1343C if plain else 0x1343E)
+        for _ in range(rng.randint(1, 5)):
+            text += part()
+        text.append(0x1343D if plain or rng.random() < 0.05 else 0x1343F)
+        if rng.random() < 0.85:
+            text += literal(rng.choice(L.CLOSINGS)) if rng.random() < 0.3 else [rng.choice(L.CLOSINGS)]
+        texts.append(text + [c for _ in range(rng.randint(0, 1)) for c in part()])
+    return texts
+
+
+def test_combined(shaper):
+    """Enclosures with modified signs: the golden lines; the font equals
+    the reference on seeded random text, with calt on and off; modified
+    delimiters join and draw nothing; the automatic layer stacks a modified
+    word inside a cartouche as it stacks the word with its controls."""
+    for mdc, expected in COMBINED_WORDS.items():
+        shaped = shaper.shape(encode(mdc))
+        found = (sum(g[4] for g in shaped), [(g[0], g[2], g[3]) for g in shaped if shaper.drawn(g[0])],
+                 [(g[0], g[2], g[3]) for g in shaped if g[0] in shaper.frames])
+        check(found == expected, f"{mdc}: {found}, expected {expected}")
+    texts = [encode(mdc) for mdc in COMBINED_WORDS]
+    for d in (*L.OPENINGS, *L.CLOSINGS):  # every delimiter mirrored and damaged, joined and apart
+        texts += [[d, MIR, DMG["all"], 0x1343C, gardiner("A1"), 0x1343D], [0x1343C, gardiner("A1"), 0x1343D, d, MIR],
+                  [d, MIR, 0x200D, 0x1343E, gardiner("A1"), 0x1343F, d, DMG["ts"]]]
+    texts += combined_texts(random.Random(37), 1500)
+    compared, failed = compare_all(shaper, texts)
+    formed = sum(any(c.frame for c in L.layout(t, SIGNS, TABLE)) for t in texts)
+    off = Shaper(shaper.path, table=None, features={"calt": False})
+    off_count, off_failed = compare_all(off, texts[:300])
+    for plain, explicit in ((f"V11A{B}D21<13450>-N35-G43<13440>{E}V11B", f"V11A{B}D21<13450>:N35-G43<13440>{E}V11B"),
+                            (f"O36C{BW}R4<13447>-X1-Q3<13440>{EW}O36D", f"O36C{BW}R4<13447>:X1*Q3<13440>{EW}O36D")):
+        found = [(g[0], g[2], g[3]) for g in shaper.shape(encode(plain)) if shaper.drawn(g[0]) or g[0] in shaper.frames]
+        reference = [(g[0], g[2], g[3]) for g in shaper.shape(encode(explicit))
+                     if shaper.drawn(g[0]) or g[0] in shaper.frames]
+        check(found == reference, f"{plain} typed plainly: {found}, typed with controls: {reference}")
+    print(f"  enclosures with modifiers: {compared} texts compared, {failed} differ ({formed} with an enclosure); "
+          f"with calt off {off_count}, {off_failed} differ")
+
+
 def main():
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "fonts/ttf/Thoth-Regular.ttf"
     shaper = Shaper(path)
     tests = (test_cmap, test_lone_signs, test_controls, test_glyphs, test_golden, test_words,
              test_groups, test_insertion, test_malformed, test_mixed, test_automatic, test_enclosures,
+             test_modifiers, test_combined,
              test_lookups, test_budget)
     for test in tests:
         try:

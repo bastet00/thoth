@@ -32,6 +32,21 @@ lookup in the order of the lookup list, so the automatic lookups, which
 come first in it, run before the stacking lookups; a text engine can turn
 calt off and leave rlig on.
 
+Enclosures (layout section 8) and the sign modifiers (section 9) add
+lookups around these, in this order in the lookup list: the modifiers are
+folded into their sign first of all (_gsub_modifiers(), calt and rlig), so
+that every later lookup, which ignores the ligature class, sees the sign
+alone; then the enclosure controls and the delimiters next to them become
+pending copies (_gsub_enclosure_start(), calt and rlig), which neither the
+automatic layer nor the stacking reaches across; a delimiter's modifiers,
+folded already, do not part it from its control. Then the automatic layer
+and the stacking; then the enclosures form on the finished clusters
+(_gsub_enclosure_end()); then a joined delimiter drops its modifiers
+(_gsub_enclosure_modifiers()); last the modifiers are drawn on whatever
+glyph the sign has become (_gsub_modifiers_late()). In GPOS the base shift
+of rule E4 comes first, so that everything hanging from the base follows
+it, and the shading last.
+
 GPOS, features mark and mkmk: every glyph of a group hangs from one before
 it: V from Q (on the axis), each row from V or the row above, the last row
 from V's bottom, the row-width marker from its row, each sign from the
@@ -65,11 +80,14 @@ class Writer:
         self.text.append(f"@{name} = {cls(glyphs)};")
         return f"@{name}"
 
-    def lookup(self, name, rules, marks=None, table=None, extension=False):
+    def lookup(self, name, rules, marks=None, table=None, extension=False, flags="IgnoreLigatures"):
         """A lookup; marks: its mark filtering set; table: "gsub" or "gpos"
         if a feature applies it (else it is only called by other lookups);
-        extension: stored as an extension lookup, at the end of its table."""
-        flag = [f"    lookupflag UseMarkFilteringSet {marks};"] if marks else []
+        extension: stored as an extension lookup, at the end of its table;
+        flags: by default the lookup ignores the ligature class, which only
+        the markers of the sign modifiers have (_gsub_modifiers())."""
+        flag = " ".join(f for f in (flags, f"UseMarkFilteringSet {marks}" if marks else "") if f)
+        flag = [f"    lookupflag {flag};"] if flag else []
         ext = " useExtension" if extension else ""
         self.text += [f"lookup {name}{ext} {{", *flag, *(f"    {r};" for r in rules), f"}} {name};"]
         if table:
@@ -424,8 +442,9 @@ def _gpos(n, w):
         step = L.half_unit(k)  # cells and spacers go across
         for c in signs:
             a = n.signs[c].cell[0]
-            enter[-L.half(a, step)].append(n.variant(c, k))
-            leave[a * step - L.half(a, step)].append(n.variant(c, k))
+            for name in [n.variant(c, k)] + n.modifiers.mirrored_variants(c, k):  # mirrored: the same cell
+                enter[-L.half(a, step)].append(name)
+                leave[a * step - L.half(a, step)].append(name)
         for d in n.slacks:
             enter[0].append(n.spacer(d, k))
             leave[d * step].append(n.spacer(d, k))
@@ -614,10 +633,14 @@ def categories(font, names, automatic):
 def add_features(font, names, automatic):
     w = Writer()
     w.text += [f"languagesystem {script} {language};" for script, language in SYSTEMS]
-    enclosure = _gsub_enclosure_start(names, w)  # first of all, in calt and rlig (layout rule E2)
-    auto = _gsub_auto(names, w, automatic)  # first in the lookup list
+    # GSUB, in the order of the lookup list (layout sections 8 and 9)
+    modifiers = _gsub_modifiers(names, w)  # first of all: folds the modifiers into their sign (rule M2)
+    enclosure = _gsub_enclosure_start(names, w)  # then the boundaries of enclosures (rule E2)
+    auto = _gsub_auto(names, w, automatic)
     _gsub(names, w)
-    _gsub_enclosure_end(names, w)
+    _gsub_enclosure_end(names, w)  # after the stacking lookups: the enclosures form
+    absorbed = _gsub_enclosure_modifiers(names, w)
+    modifiers_late = _gsub_modifiers_late(names, w)  # last: mirrors and shades what the above drew
     shift = _gpos_enclosure_first(names, w)  # first in the GPOS lookup list
     _gpos(names, w)
 
@@ -631,49 +654,76 @@ def add_features(font, names, automatic):
         return [f"feature {tag} {{", *body, f"}} {tag};"]
 
     inserts = _gpos_insert(names, w)
+    mirrored_bases = _gpos_mirrored_bases(names, w)  # moved before the inserted signs hang from them
     enclosed = _gpos_enclosure(names, w)
-    w.text += feature("calt", enclosure + auto)
-    w.text += feature("rlig", enclosure + w.gsub)
-    w.text += feature("mark", shift + w.gpos[:1] + inserts[:1] + enclosed, automatic=True)
-    w.text += feature("mkmk", w.gpos[1:] + inserts[1:], automatic=True)
+    hatch = _gpos_modifiers(names, w)  # last: the shading hangs from the placed signs
+    w.text += feature("calt", modifiers + enclosure + auto)
+    w.text += feature("rlig", modifiers + enclosure + w.gsub + absorbed + modifiers_late)
+    w.text += feature("mark", shift + w.gpos[:1] + mirrored_bases + inserts[:1] + enclosed + hatch[:1],
+                      automatic=True)
+    w.text += feature("mkmk", w.gpos[1:] + inserts[1:] + hatch[1:], automatic=True)
     font.lib["public.openTypeCategories"] = categories(font, names, automatic)
     e = names.enclosures  # enclosures (layout section 8)
     font.lib["public.openTypeCategories"].update(
         {**{name: "base" for name in e.bases() + e.empty_bases()}, **{name: "mark" for name in e.marks()}})
+    font.lib["public.openTypeCategories"].update(modifier_categories(names))  # section 9
     font.features.text = "\n".join(w.text) + "\n"
 
 
 # --- Enclosures (layout section 8) --------------------------------------------
 
+def _enclosure_boxes(n):
+    """The boxes that may stand inside an enclosure: the controls but the
+    enclosure controls, and a damage modifier that is no part of a literal
+    (layout rule M3), which is content as the stray mirror control is."""
+    return [control_name(c) for c in CONTROLS if c not in L.ENCLOSURE] + [n.modifiers.stray(c) for c in L.DAMAGE]
+
+
 def _enclosure_content(n):
     """The bases a cluster can start with once the stacking lookups are
-    done: lone signs, group heads, shrunk birds and control boxes."""
+    done: lone signs, group heads, shrunk birds and boxes. A new kind of
+    group base must be added here (and in _enclosure_bases())."""
     found = [n.lone(c) for c in sorted(n.signs)] + [n.inserts.shrunk(c, k) for c, k in n.inserts.shrunk_glyphs]
     found += [n.head(width, level) for width, level in n.head_sizes] + [n.fallback_head]
-    return found + [control_name(c) for c in CONTROLS if c not in L.ENCLOSURE]
+    return found + _enclosure_boxes(n)
 
 
-def _enclosure_bases(n):
+def _enclosure_bases(n, drawn=False):
     """{glyph: (advance, lift)} of the bases of the clusters inside an
     enclosure once rule E4 has been applied: groups, boxes, the spacers of
-    lone signs and the bases of insertions; lift: how far rule E4 moves it."""
+    lone signs and the bases of insertions; lift: how far rule E4 moves it.
+    drawn: also the glyphs the sign modifiers put in place of these after
+    the enclosure lookups (layout section 9: a mirrored base), for GPOS."""
     e = n.enclosures
     found = {n.head(width, level): (L.advance(width, L.half_unit(level)), 0) for width, level in n.head_sizes}
-    found.update({control_name(c): (L.CONTROL_ADVANCE, 0) for c in CONTROLS if c not in L.ENCLOSURE})
+    found.update({name: (L.CONTROL_ADVANCE, 0) for name in _enclosure_boxes(n)})
     found.update({e.spacer(cell): (L.advance(cell[0], L.half_unit(0)), 0) for cell in e.cells})
     for (base, level), fits in e.enclosable.items():
         if fits:
             glyph = n.lone(base) if not level else n.inserts.shrunk(base, level)
             found[glyph] = (n.signs[base].advance, e.moved.get(glyph, (0,))[0])
+            if drawn and glyph in _mirrored_of(n):
+                found[_mirrored_of(n)[glyph]] = found[glyph]
     return found
 
 
+def _mirrored_of(n):
+    """{lone sign or shrunk bird: its mirrored glyph} (layout rule M4)."""
+    m = n.modifiers
+    if not hasattr(m, "_of"):
+        m._of = {n.lone(c): m.lone(c) for c in m.mirrored}
+        m._of.update({n.inserts.shrunk(c, k): m.shrunk_glyph(c, k) for c, k in m.shrunk})
+    return m._of
+
+
 def _gsub_enclosure_start(n, w):
-    """Rule E2, first of all lookups, in calt and rlig: every enclosure
-    control becomes its pending copy, and so does a delimiter right before
-    a begin control or right after an end control; the stacking and the
-    automatic layer take them for other text. The rules name the default
-    ignorables, which HarfBuzz would otherwise skip in context."""
+    """Rule E2, in calt and rlig, first of all lookups but the fold of the
+    modifiers (whose markers these rules skip, as every lookup does): every
+    enclosure control becomes its pending copy, and so does a delimiter
+    right before a begin control or right after an end control; the
+    stacking and the automatic layer take them for other text. The rules
+    name the default ignorables, which HarfBuzz would otherwise skip in
+    context."""
     e = n.enclosures
     ign = w.define("E_IGNORABLE", n.ignorables)
     w.lookup("enc_pending", [f"sub {control_name(c)} by {e.pending(c)}" for c in L.ENCLOSURE])
@@ -686,13 +736,6 @@ def _gsub_enclosure_start(n, w):
         f"ignore sub {ends} {ign} {closings}'", f"sub {ends} {closings}' lookup enc_wait",
     ])
     return ["enc_pending", "enc_delimiters"]
-
-
-def _lookup_flagged(w, name, flag, rules, table=None):
-    """A lookup with any lookup flag (Writer.lookup has mark filtering only)."""
-    w.text += [f"lookup {name} {{", f"    lookupflag {flag};", *(f"    {r};" for r in rules), f"}} {name};"]
-    if table:
-        getattr(w, table).append(name)
 
 
 def _gsub_enclosure_end(n, w):
@@ -758,14 +801,14 @@ def _gsub_enclosure_end(n, w):
         w.lookup(f"enc_end_{k}", [f"sub {end_marks[k]} by {e.state('eok', k)}"])
         rules += [f"sub [{begin_marks[k]} {e.state('in', k)}] {e.inside}' lookup enc_to_{k}",
                   f"sub {e.state('in', k)} {end_marks[k]}' lookup enc_end_{k}"]
-    _lookup_flagged(w, "enc_kind", "IgnoreBaseGlyphs UseMarkFilteringSet @E_STATES", rules, "gsub")
+    w.lookup("enc_kind", rules, states, "gsub", flags="IgnoreBaseGlyphs IgnoreLigatures")  # over the marks alone
     # 4. back
     rules = []
     for k in e.kinds:
         good = cls([e.state("ok", k), e.state("eok", k)])
         rules += [f"rsub {e.state('in', k)}' {good} by {e.state('ok', k)}",
                   f"rsub {begin_marks[k]}' {good} by {e.state('bok', k)}"]
-    _lookup_flagged(w, "enc_back", "IgnoreBaseGlyphs UseMarkFilteringSet @E_STATES", rules, "gsub")
+    w.lookup("enc_back", rules, states, "gsub", flags="IgnoreBaseGlyphs IgnoreLigatures")
     # 5. ends
     rules = []
     for c, (k, begins) in L.ENCLOSURE.items():
@@ -809,8 +852,10 @@ def _gpos_enclosure_first(n, w):
     the marks with it and HarfBuzz 15.0 does not."""
     e = n.enclosures
     good = cls(e.state("ok", k) for k in e.kinds)
-    w.lookup("enc_move", [f"pos {g} <0 {move} 0 0>" for g, (move, *_) in sorted(e.moved.items())])
-    w.lookup("enc_shift", [f"pos {cls(sorted(e.moved))}' lookup enc_move {good}"])
+    moved = {g: move for g, (move, *_) in e.moved.items()}
+    moved.update({_mirrored_of(n)[g]: move for g, move in list(moved.items()) if g in _mirrored_of(n)})  # rule M4
+    w.lookup("enc_move", [f"pos {g} <0 {move} 0 0>" for g, move in sorted(moved.items())])
+    w.lookup("enc_shift", [f"pos {cls(sorted(moved))}' lookup enc_move {good}"])
     return ["enc_shift"]
 
 
@@ -821,7 +866,8 @@ def _gpos_enclosure(n, w):
     lift of a moved base, which they would otherwise follow. Returns the
     lookups, for feature mark."""
     e = n.enclosures
-    w.text.append(f"markClass {cls(n.variant(c, 0) for c in sorted(n.signs))} <anchor 0 0> @E_CELL;")
+    cell = [g for c in sorted(n.signs) for g in [n.variant(c, 0)] + n.modifiers.mirrored_variants(c, 0)]
+    w.text.append(f"markClass {cls(cell)} <anchor 0 0> @E_CELL;")  # also mirrored (rule M4)
     rules = [f"pos base {e.spacer(cell)} <anchor {L.centre(cell[0], L.half_unit(0))} "
              f"{L.span(1, cell[1], L.UNIT)[1]}> mark @E_CELL" for cell in e.cells]
     w.lookup("enc_place_cell", rules)
@@ -830,9 +876,254 @@ def _gpos_enclosure(n, w):
     w.text += [f"markClass {cls(starts)} <anchor 0 0> @E_START;", f"markClass {cls(ends)} <anchor 0 0> @E_END;",
                f"markClass {cls(e.merlon_rows())} <anchor 0 0> @E_MERLONS;"]
     rules = []
-    for glyph, (width, lift) in sorted(_enclosure_bases(n).items()):
+    for glyph, (width, lift) in sorted(_enclosure_bases(n, drawn=True).items()):
         if L.segment(width) is not None:
             rules.append(f"pos base {glyph} <anchor 0 {-lift}> mark @E_START <anchor {width} {-lift}> mark @E_END "
                          f"<anchor {width // 2} {-lift}> mark @E_MERLONS")
     w.lookup("enc_place_lines", rules)
     return ["enc_place_cell", "enc_place_lines"]
+
+
+# --- Enclosures and sign modifiers together (layout sections 8 and 9) --------
+
+def _gsub_enclosure_modifiers(n, w):
+    """After the enclosure lookups, before the late modifier lookups: the
+    modifiers of a delimiter that has joined an enclosure draw nothing
+    (layout rule E6). Its mirror would otherwise become the box of rule M8;
+    its damage markers find no level to be read from and are cleaned."""
+    e, m = n.enclosures, n.modifiers
+    joined = cls(e.joined(c) for c in (*L.OPENINGS, *L.CLOSINGS))
+    w.lookup("enc_mod_absorb", [f"sub {joined} {m.mirror}' lookup mod_drop_mirror"], flags="IgnoreMarks")
+    return ["enc_mod_absorb"]
+
+
+# --- Sign modifiers (layout section 9) ----------------------------------------
+
+def _gsub_modifiers(n, w):
+    """Mirroring and damage, first part: before the automatic layer and the
+    stacking lookups, in calt and rlig. S is a hieroglyph's lone glyph, M
+    the mirror control, D a damage modifier, as typed.
+
+     1. find     S followed by M or D (any ignorable but ZWJ and ZWNJ
+                 between: HarfBuzz skips those the rules do not name) gets
+                 the marker _mk after it (rule M1).
+     2. fold     _mk and the modifiers after it become one glyph by
+                 ligature (_mir, _dm.q or _md.q), so that they are one
+                 cluster with S; an M or D that no ligature takes keeps its
+                 box (rule M3). From here on these glyphs are of the
+                 ligature class, which every lookup of the stacking ignores.
+     3. symmetric  after a symmetric sign, the mirror is dropped (rule M4).
+     4. swap     a corner control after a mirrored sign is swapped, start
+                 for end (rule M5).
+     5. size     _md.q becomes _mir _dm.q; _dm.q gets the cell width and
+                 height of S as two markers (rule M6).
+    """
+    m = n.modifiers
+    mirror = control_name(L.MIRROR)
+    sign = w.define("M_SIGN", [n.lone(c) for c in m.hieroglyphs])
+    damage = w.define("M_DAMAGE", [m.stray(c) for c in L.DAMAGE])
+    breaks = w.define("M_BREAK", [g for g in n.ignorables if g != ".notdef"])  # ZWJ, ZWNJ
+    damaged = w.define("M_DM", [m.damaged(q) for q in m.quarters])
+    both = w.define("M_MD", [m.both(q) for q in m.quarters])
+    lookups = []
+
+    def lookup(name, rules, **kwargs):
+        w.lookup(name, rules, flags="", **kwargs)
+        lookups.append(name)
+
+    # 1. find
+    w.lookup("mod_mark", [f"sub {n.lone(c)} by {n.lone(c)} {m.marker}" for c in m.hieroglyphs], flags="")
+    lookup("mod_find", [f"ignore sub {sign}' {breaks}", f"sub {sign}' lookup mod_mark [{mirror} {damage}]"])
+    # 2. fold
+    w.lookup("mod_fold_mirror", [f"sub {m.marker} {mirror} by {m.mirror}"], flags="")
+    w.lookup("mod_fold_all", [f"sub {m.marker} {mirror} {m.stray(c)} by {m.both(L.quadrants(c))}" for c in L.DAMAGE]
+             + [f"sub {m.marker} {mirror} by {m.mirror}"]
+             + [f"sub {m.marker} {m.stray(c)} by {m.damaged(L.quadrants(c))}" for c in L.DAMAGE], flags="")
+    lookup("mod_fold", [f"sub {m.marker}' lookup mod_fold_mirror {mirror}' {breaks}",
+                        f"sub {m.marker}' lookup mod_fold_all {mirror}' {damage}'",
+                        f"sub {m.marker}' lookup mod_fold_mirror {mirror}'",
+                        f"sub {m.marker}' lookup mod_fold_all {damage}'"])
+    # 3. symmetric
+    symmetric = w.define("M_SYM", [n.lone(c) for c in m.symmetric])
+    w.lookup("mod_drop_mirror", [f"sub {m.mirror} by NULL"], flags="")
+    w.lookup("mod_unmirror", [f"sub {m.both(q)} by {m.damaged(q)}" for q in m.quarters], flags="")
+    lookup("mod_symmetric", [f"sub {symmetric} {m.mirror}' lookup mod_drop_mirror",
+                             f"sub {symmetric} {both}' lookup mod_unmirror"])
+    # 4. swap, after a bird; after another sign the corner control becomes
+    # an unsupported control (the mirror control's glyph)
+    pairs = [(c, L.SWAPPED[c]) for c in sorted(L.SWAPPED)]
+    corners = cls(control_name(a) for a, _ in pairs)
+    birds = cls(n.lone(c) for c in m.mirrored if c in L.MIRRORED_BASES)
+    others = cls(n.lone(c) for c in m.mirrored if c not in L.MIRRORED_BASES)
+    w.lookup("mod_swap_corner", [f"sub {control_name(a)} by {control_name(b)}" for a, b in pairs], flags="")
+    w.lookup("mod_no_corner", [f"sub {corners} by {mirror}"], flags="")
+    lookup("mod_swap", [f"sub {birds} [{m.mirror} {both}] {corners}' lookup mod_swap_corner",
+                        f"sub {others} [{m.mirror} {both}] {corners}' lookup mod_no_corner"])
+    # 5. size
+    lookup("mod_split", [f"sub {m.both(q)} by {m.mirror} {m.damaged(q)}" for q in m.quarters])
+    lookup("mod_size", [f"sub {m.damaged(q)} by {m.damaged(q)} {m.width(0)} {m.height(0)}" for q in m.quarters])
+    rules = []
+    for a in m.cell_widths:
+        w.lookup(f"mod_width_{a}", [f"sub {m.width(0)} by {m.width(a)}"], flags="")
+        signs = cls(n.lone(c) for c in m.hieroglyphs if n.signs[c].cell[0] == a)
+        rules += [f"sub {signs} {damaged} {m.width(0)}' lookup mod_width_{a}",
+                  f"sub {signs} {m.mirror} {damaged} {m.width(0)}' lookup mod_width_{a}"]
+    lookup("mod_widths", rules)
+    widths = cls(m.width(a) for a in m.cell_widths)
+    rules = []
+    for b in m.cell_heights:
+        w.lookup(f"mod_height_{b}", [f"sub {m.height(0)} by {m.height(b)}"], flags="")
+        signs = cls(n.lone(c) for c in m.hieroglyphs if n.signs[c].cell[1] == b)
+        rules += [f"sub {signs} {damaged} {widths} {m.height(0)}' lookup mod_height_{b}",
+                  f"sub {signs} {m.mirror} {damaged} {widths} {m.height(0)}' lookup mod_height_{b}"]
+    lookup("mod_heights", rules)
+    return lookups
+
+
+def _gsub_modifiers_late(n, w):
+    """Mirroring and damage, second part: after the stacking lookups, when
+    each sign is its lone glyph, its variant at its level or a shrunk bird.
+
+     1. mirror   the glyph before _mir (other marks between are skipped)
+                 becomes its mirrored glyph; _mir goes (rule M4).
+     2. tiles    from the level of that glyph, the cell's width and height
+                 become the quarter's size in tiles, then one glyph (M7).
+     3. pieces   for each quarter of _dm.q, a piece of shading after the
+                 size, in the order of the bits (rule M7).
+     4. clean    the markers go; deleted glyphs leave their cluster to the
+                 glyph before them, which is the sign's.
+    """
+    m, i = n.modifiers, n.inserts
+    hiero = set(m.hieroglyphs)
+    variants = {k: [n.variant(c, k) for c in m.hieroglyphs] + [m.variant(c, k) for c in m.mirrored if k in m.levels]
+                for k in LEVELS}
+    every = w.define("M_VARIANTS", [g for k in LEVELS for g in variants[k]])
+    lone = [n.lone(c) for c in m.hieroglyphs] + [m.lone(c) for c in m.mirrored]
+    shrunk = {k: [i.shrunk(c, kk) for c, kk in i.shrunk_glyphs if kk == k and c in hiero]
+              + [m.shrunk_glyph(c, kk) for c, kk in m.shrunk if kk == k] for k in L.SHRINK_LEVELS}
+    damaged = w.define("M_DM2", [m.damaged(q) for q in m.quarters])
+    lookups = []
+
+    def lookup(name, rules, **kwargs):
+        w.lookup(name, rules, flags="", **kwargs)
+        lookups.append(name)
+
+    # 1. mirror
+    w.lookup("mod_mirror_variant", [f"sub {n.variant(c, k)} by {m.variant(c, k)}"
+                                    for k in m.levels for c in m.mirrored], flags="")
+    w.lookup("mod_mirror_lone", [f"sub {n.lone(c)} by {m.lone(c)}" for c in m.mirrored]
+             + [f"sub {i.shrunk(c, k)} by {m.shrunk_glyph(c, k)}" for c, k in m.shrunk], flags="")
+    mirrorable = cls(n.variant(c, k) for k in m.levels for c in m.mirrored)
+    lone_mirrorable = cls([n.lone(c) for c in m.mirrored] + [i.shrunk(c, k) for c, k in m.shrunk])
+    lookup("mod_mirror", [f"sub {mirrorable}' lookup mod_mirror_variant {m.mirror}' lookup mod_drop_mirror",
+                          f"sub {lone_mirrorable}' lookup mod_mirror_lone {m.mirror}' lookup mod_drop_mirror"],
+           marks=every)
+    lookup("mod_mirror_box", [f"sub {m.mirror} by {m.mirror_box}"])  # rule M8: a level without mirrored glyphs
+    # 2. tiles: the glyph before gives the level
+    contexts = [(cls(variants[k]), k) for k in LEVELS] + [(cls(lone), 0)]
+    contexts += [(cls(shrunk[k]), k) for k in L.SHRINK_LEVELS if shrunk[k]]
+    for name, sizes, marker, step, tiles_name, before in (
+            ("across", m.cell_widths, m.width, L.half_unit, m.across_tiles, ""),
+            ("up", m.cell_heights, m.height, L.unit, m.up_tiles, cls(m.across_tiles(v) for v in m.across) + " ")):
+        values = m.across if name == "across" else m.up
+        for v in values:
+            w.lookup(f"mod_{name}_{v}", [f"sub {cls(marker(a) for a in sizes)} by {tiles_name(v)}"], flags="")
+        rules = []
+        for context, k in contexts:
+            found = defaultdict(list)
+            for a in sizes:
+                found[L.tiles(a * step(k))].append(marker(a))
+            rules += [f"sub {context} {damaged} {before}{cls(found[v])}' lookup mod_{name}_{v}" for v in sorted(found)]
+        lookup(f"mod_{name}", rules, marks=every)
+    lookup("mod_tiles", [f"sub {m.across_tiles(v)} {m.up_tiles(u)} by {m.size(v, u)}" for v, u in m.sizes])
+    # 3. pieces, the last quarter first: each goes right after the size
+    sizes = cls(m.size(v, u) for v, u in m.sizes)
+    for q in reversed(L.QUADRANTS):
+        w.lookup(f"mod_add_{q}", [f"sub {m.size(v, u)} by {m.size(v, u)} {m.piece(q, v, u)}" for v, u in m.sizes],
+                 flags="")
+        lookup(f"mod_pieces_{q}", [f"sub {cls(m.damaged(x) for x in m.quarters if x & q)} {sizes}' lookup mod_add_{q}"])
+    # 4. clean
+    lookup("mod_clean", [f"sub {g} by NULL" for g in m.markers()])
+    return lookups
+
+
+def _gpos_mirrored_bases(n, w):
+    """A mirrored base of a corner insertion: the corner mark hangs from it
+    where it hangs from the sign, mirrored across the middle of the ink
+    (rule M5: the control was swapped). As in _gpos_insert(), in subtables
+    by corner, shape and the narrowest and widest sign."""
+    m, i = n.modifiers, n.inserts
+    mirrored = set(m.mirrored) & set(L.MIRRORED_BASES)
+    groups = defaultdict(list)
+    for key, sizes in sorted(i.anchors.items()):
+        if key[0] in mirrored:
+            groups[(key[2], key[3], min(sizes), max(sizes))].append(key)
+    rules = []
+    for _, keys in sorted(groups.items()):
+        if rules:
+            rules.append("subtable")
+        for base, level, control, shape in keys:
+            sign, zone = n.signs[base], i.zones[(base, level, control, shape)]
+            x = sign.box[0] + sign.box[2] - zone.x
+            glyph = m.lone(base) if not level else m.shrunk_glyph(base, level)
+            anchors = " ".join(f"<anchor {x} {zone.seats[size - 1] + sign.lift}> mark @I_{control:X}_{shape}_{size}"
+                               for size in sorted(i.anchors[(base, level, control, shape)]))
+            rules.append(f"pos base {glyph} {anchors}")
+    start = len(w.text)
+    w.lookup("mod_insert_place", rules)
+    # its place in the lookup list: right before ins_place, after the mark
+    # classes it uses, so that CoreText (which applies attachments in lookup
+    # order) places the corner mark before the inserted sign hangs from it
+    block = w.text[start:]
+    del w.text[start:]
+    at = w.text.index("lookup ins_place {")
+    w.text[at:at] = block
+    return ["mod_insert_place"]
+
+
+def _gpos_modifiers(n, w):
+    """A mirrored inserted sign hangs from its corner mark as the sign does;
+    the pieces of shading hang from the middle of their cell (rule M6): from
+    a lone sign or a shrunk bird (mark to base, at the middle of the cell
+    around its ink), from a variant (mark to mark, at the middle of the cell
+    above its origin), or from the piece before them. Returns the lookups,
+    mark to base first."""
+    m, i = n.modifiers, n.inserts
+    inserted = [m.variant(c, k) for c in i.insertable for k in L.INSERT_LEVELS
+                if k in m.levels and c in set(m.mirrored)]
+    w.text.append(f"markClass {cls(inserted)} <anchor 0 0> @M_I_SIGN;")
+    marks = i.corner_marks()
+    w.lookup("mod_insert_sign_place", [f"pos mark {cls(marks)} <anchor 0 0> mark @M_I_SIGN"],
+             w.define("M_I_PLACE", marks + inserted))
+    pieces = m.pieces() + [m.mirror_box]  # the box of rule M8 hangs where the pieces do
+    w.text.append(f"markClass {cls(pieces)} <anchor 0 0> @M_HATCH;")
+    bases = defaultdict(list)
+    for c in m.hieroglyphs:
+        sign = n.signs[c]
+        x, y = L.lone_middle(sign)
+        bases[(x, y + L.damage_size(sign, 0)[2])] += [n.lone(c)] + ([m.lone(c)] if c in set(m.mirrored) else [])
+    for c, k in i.shrunk_glyphs:
+        if c in set(m.hieroglyphs):
+            sign = n.signs[c]
+            x, y = L.lone_middle(sign)
+            bases[(x, y + L.damage_size(sign, k)[2])] += [i.shrunk(c, k)] + (
+                [m.shrunk_glyph(c, k)] if (c, k) in set(m.shrunk) else [])
+    w.lookup("mod_hatch_base", [f"pos base {cls(names)} <anchor {x} {y}> mark @M_HATCH"
+                                for (x, y), names in sorted(bases.items())])
+    middles = defaultdict(list)
+    for k in LEVELS:
+        for c in m.hieroglyphs:
+            middles[L.damage_size(n.signs[c], k)[2]] += [n.variant(c, k)] + m.mirrored_variants(c, k)
+    rules = [f"pos mark {cls(names)} <anchor 0 {y}> mark @M_HATCH" for y, names in sorted(middles.items())]
+    rules.append(f"pos mark {cls(pieces)} <anchor 0 0> mark @M_HATCH")
+    w.lookup("mod_hatch_mark", rules, w.define("M_HATCH_ON", [g for names in middles.values() for g in names] + pieces))
+    return ["mod_hatch_base", "mod_insert_sign_place", "mod_hatch_mark"]
+
+
+def modifier_categories(names):
+    """GDEF classes of the glyphs of the sign modifiers."""
+    m = names.modifiers
+    found = {name: "base" for name in m.bases()}
+    found.update({name: "mark" for name in m.marks()})
+    found.update({name: "ligature" for name in m.markers()})
+    return found
