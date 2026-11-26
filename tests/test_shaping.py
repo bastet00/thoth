@@ -762,7 +762,9 @@ def test_automatic(shaper):
               ("S34-N35-Aa1", "S34-N35:Aa1"), ("G14-X1-B1", "G14<13434>X1-B1"),  # mwt: t in the corner
               # the owner's cases (shape rule): bolt over viper, the rest as it is
               ("O34-I9-D19-A2", "O34:I9-D19-A2"), ("O34-I9-Aa1-G43" + "-Z1" * 7, "O34:I9-Aa1-G43" + "-Z1" * 7),
-              ("N35-N35", "N35:N35"), ("O34-I9-N37-Y1", "O34:I9-N37:Y1"))
+              ("N35-N35", "N35:N35"), ("O34-I9-N37-Y1", "O34:I9-N37:Y1"),
+              # words of the list typed together (rule A2): the owner's nfr ꜥnḫ
+              ("F35-I9-D21-S34-N35-Aa1", "F35-I9:D21-S34-N35:Aa1"))
     for plain, explicit in golden:
         found = [(g[0], g[2], g[3]) for g in shaper.shape(encode(plain)) if shaper.drawn(g[0])]
         reference = [(g[0], g[2], g[3]) for g in shaper.shape(encode(explicit)) if shaper.drawn(g[0])]

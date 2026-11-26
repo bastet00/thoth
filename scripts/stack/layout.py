@@ -847,6 +847,12 @@ def _inserted(start, end, run, signs):
 #     begins a word; one followed by such a character, or the end of the
 #     text, ends a word. A stretch that touches a control on a side (the
 #     controls of rules 9 and 10) does not begin or end a word there.
+#     Words of the table typed together are words too: a stretch that
+#     begins and ends a word and is made entirely of the sign sequences of
+#     entries (their marks aside) is cut into them, as if a space stood
+#     between them; read from its start, each time the longest one after
+#     which the rest still reads as such sequences. Any other stretch is
+#     one word or less, as before.
 # A3. An entry of the table is a sign sequence, which may be marked to hold
 #     only where a word begins (START before it) or ends (END after it),
 #     and its arrangement: the sequence cut into blocks, each block a sign
@@ -1027,6 +1033,70 @@ def shape_blocks(codepoints, start, end, free, signs, bound_start=False):
     return found
 
 
+def words_of(table):
+    """The sign sequences of the table's entries, without their marks: the
+    words of rule A2."""
+    return {tuple(c for c in key if c not in (START, END)) for key in table}
+
+
+def cut_words(signs, words):
+    """Rule A2: a stretch made entirely of words of the table, as a list of
+    those words (the longest word first wherever the rest still reads as
+    words); any other stretch as itself, one piece."""
+    count = len(signs)
+    longest = max(map(len, words), default=0)
+    reads = [False] * count + [True]  # reads[i]: signs[i:] is words of the table
+    for i in range(count - 1, -1, -1):
+        reads[i] = any(reads[i + n] and tuple(signs[i:i + n]) in words
+                       for n in range(2, min(longest, count - i) + 1))
+    if not reads[0]:
+        return [list(signs)]
+    pieces, i = [], 0
+    while i < count:
+        n = next(n for n in range(min(longest, count - i), 1, -1)
+                 if reads[i + n] and tuple(signs[i:i + n]) in words)
+        pieces.append(list(signs[i:i + n]))
+        i += n
+    return pieces
+
+
+def read_word(codepoints, index, end, bound_start, bound_end, table, longest, signs, joins):
+    """Rules A4, A5, A8 and A9 on the signs codepoints[index:end], one word
+    (or a stretch that is not cut into words): adds the implied controls to
+    joins."""
+    stretch = (*((START,) * (not bound_start)), *codepoints[index:end], *((END,) * (not bound_end)))
+    first = index - (not bound_start)  # the index of stretch[0] in codepoints
+    position, taken = 0, []
+    while position < len(stretch):
+        if stretch[position] == END or (bound_start and position == 0):
+            position += 1
+            continue
+        for length in range(min(longest, len(stretch) - position), 1, -1):
+            arrangement = table.get(stretch[position:position + length])
+            if arrangement is not None:
+                offset = position + (stretch[position] == START)
+                taken.append((first + offset, arrangement))
+                position += length
+                break
+        else:
+            position += 1
+    free = set(range(index, end))  # rule A8: the signs no entry took
+    for at, arrangement in taken:
+        free -= set(range(at, at + sum(is_sign(c) for block in arrangement for c in block)))
+    taken += shape_blocks(codepoints, index, end, free, signs, bound_start)
+    for at, arrangement in taken:
+        for block in arrangement:
+            size = sum(map(is_sign, block))
+            if not (bound_end and at + size == end):  # rule A5
+                sign = at
+                for c in block[1:]:
+                    if is_sign(c):
+                        sign += 1
+                    else:
+                        joins.setdefault(sign, []).append(c)
+            at += size
+
+
 def automatic(codepoints, table, signs=None):
     """Rules A1 to A9: (text, origin), the text with the implied controls,
     and for each of its characters the index in codepoints it comes from
@@ -1035,6 +1105,7 @@ def automatic(codepoints, table, signs=None):
     signs = signs if signs is not None else default_signs()
     joins = {}  # index of a sign: the controls implied after it
     longest = max(map(len, table), default=0)
+    words = words_of(table)
     index, count = 0, len(codepoints)
     while index < count:
         if not is_sign(codepoints[index]):
@@ -1045,37 +1116,14 @@ def automatic(codepoints, table, signs=None):
             end += 1
         bound_start = index > 0 and codepoints[index - 1] in CONTROLS
         bound_end = end < count and codepoints[end] in CONTROLS
-        stretch = (*((START,) * (not bound_start)), *codepoints[index:end], *((END,) * (not bound_end)))
-        first = index - (not bound_start)  # the index of stretch[0] in codepoints
-        position, taken = 0, []
-        while position < len(stretch):
-            if stretch[position] == END or (bound_start and position == 0):
-                position += 1
-                continue
-            for length in range(min(longest, len(stretch) - position), 1, -1):
-                arrangement = table.get(stretch[position:position + length])
-                if arrangement is not None:
-                    offset = position + (stretch[position] == START)
-                    taken.append((first + offset, arrangement))
-                    position += length
-                    break
-            else:
-                position += 1
-        free = set(range(index, end))  # rule A8: the signs no entry took
-        for at, arrangement in taken:
-            free -= set(range(at, at + sum(is_sign(c) for block in arrangement for c in block)))
-        taken += shape_blocks(codepoints, index, end, free, signs, bound_start)
-        for at, arrangement in taken:
-            for block in arrangement:
-                size = sum(map(is_sign, block))
-                if not (bound_end and at + size == end):  # rule A5
-                    sign = at
-                    for c in block[1:]:
-                        if is_sign(c):
-                            sign += 1
-                        else:
-                            joins.setdefault(sign, []).append(c)
-                at += size
+        pieces = [(index, end)]
+        if not bound_start and not bound_end:  # rule A2: words of the table typed together
+            pieces, at = [], index
+            for word in cut_words(codepoints[index:end], words):
+                pieces.append((at, at + len(word)))
+                at += len(word)
+        for piece_start, piece_end in pieces:
+            read_word(codepoints, piece_start, piece_end, bound_start, bound_end, table, longest, signs, joins)
         index = end
     text, origin = [], []
     for i, codepoint in enumerate(codepoints):

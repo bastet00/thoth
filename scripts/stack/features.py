@@ -301,6 +301,13 @@ def _gsub_auto(n, w, auto):
                  start, or C right before it, and a word end, or C right
                  after it; signs of different stretches never touch.
      2. slots    an empty slot goes between every two signs of a stretch.
+     2b. words   right to left, a slot becomes a cut where the signs after
+                 it are the signs of an entry followed by a cut or the word
+                 end; then left to right, from the word start, a cut right
+                 after such signs (the longest that still end at a cut or
+                 the word end) becomes a word end and a word start, and the
+                 cuts left become slots again (rule A2: words of the table
+                 typed together).
      3. stack    one rule per table entry, longest first, the entries that
                  hold at a word start before the others, matched over the
                  signs (the slots are skipped); an entry marked START has
@@ -345,6 +352,29 @@ def _gsub_auto(n, w, auto):
     w.lookup("auto_end", [f"sub {auto.slot} by {auto.end}"])
     w.lookup("auto_slots", [f"sub {sign}' lookup auto_slot_mark {sign}"])
     lookups += ["auto_starts", "auto_ends", "auto_end", "auto_slots"]
+
+    # 2b. words of the table typed together (rule A2). The slots are not
+    # skipped here, so every rule names them; a slot of a word may be a cut
+    # already
+    words = sorted(L.words_of(auto.table), key=lambda word: (-len(word), word))
+    gap = f"[{auto.slot} {auto.cut}]"
+    after = f"[{auto.end} {auto.cut}]"
+
+    def spelled(word):
+        return f" {gap} ".join(n.lone(c) for c in word)
+
+    w.lookup("auto_cuts_mark", [f"rsub {auto.slot}' {spelled(word)} {after} by {auto.cut}" for word in words])
+    w.lookup("auto_to_cut", [f"sub {auto.cut} by {auto.end} {auto.start}"])
+    rules = []
+    for word in words:  # a longer word that goes on from the same start wins
+        for longer in words:
+            if len(longer) > len(word) and longer[:len(word)] == word:
+                rules.append(f"ignore sub {auto.start} {spelled(word)} {auto.cut}' "
+                             f"{spelled(longer[len(word):])} {after}")
+    rules += [f"sub {auto.start} {spelled(word)} {auto.cut}' lookup auto_to_cut" for word in words]
+    w.lookup("auto_cuts", rules)
+    w.lookup("auto_uncut", [f"sub {auto.cut} by {auto.slot}"])
+    lookups += ["auto_cuts_mark", "auto_cuts", "auto_uncut"]
 
     # 3. stack: at a sign, the slot after it becomes an implied control,
     # or an inner slot where the entry joins nothing

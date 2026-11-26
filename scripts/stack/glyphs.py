@@ -459,11 +459,14 @@ class Automatic:
     rule A5 keeps its block from forming; an inner slot, which a slot
     inside an entry becomes where the entry joins nothing (so the shape
     rule knows the signs are taken); and a kept slot, which a slot inside
-    a run of half-block signs becomes where the run stays as it is (A8).
+    a run of half-block signs becomes where the run stays as it is (A8);
+    and a cut, which a slot becomes where the rest of the stretch reads as
+    words of the table (rule A2), and which then becomes a word end and a
+    word start, or a slot again.
     """
 
     start, end, slot, null = "auto.start", "auto.end", "auto.slot", "auto.null"
-    inner, kept = "auto.inner", "auto.kept"
+    inner, kept, cut = "auto.inner", "auto.kept", "auto.cut"
 
     def __init__(self, table):
         self.table = table  # layout.automatic_table()
@@ -476,7 +479,7 @@ class Automatic:
 
     def markers(self):
         return ([self.start, self.end, self.slot, self.null, self.inner, self.kept]
-                + [self.join(c) for c in self.controls])
+                + [self.join(c) for c in self.controls] + [self.cut])
 
 
 def add_automatic(font, automatic):

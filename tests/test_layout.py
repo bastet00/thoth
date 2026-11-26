@@ -716,6 +716,15 @@ AUTOMATIC = [
     # inside a run without spaces: nfr holds where a word ends, rn.f too
     ([M17, X1, F35, I9, D21], [M17, X1, F35, I9, V, D21]),
     ([D21, N35, I9], [D21, V, N35, I9]),
+    # words of the list typed together are read as words (rule A2; the
+    # owner, 2026-11-26: nfr ꜥnḫ without a space), in any order and number
+    ([F35, I9, D21, S34, N35, AA1], [F35, I9, V, D21, S34, N35, V, AA1]),
+    ([S34, N35, AA1, F35, I9, D21], [S34, N35, V, AA1, F35, I9, V, D21]),
+    ([R4, X1, Q3, F35, I9, D21, D21, N35], [R4, V, X1, H, Q3, F35, I9, V, D21, D21, V, N35]),
+    ([D21, N35, 0x13171, X1], [D21, V, N35, 0x13171, TE, X1]),  # a bird word too (G43)
+    # but only where every sign belongs to such a word: a lone A1 after
+    # ꜥnḫ leaves the run as it was
+    ([F35, I9, D21, S34, N35, AA1, A1], [F35, I9, V, D21, S34, N35, AA1, A1]),
     # the owner's bird corners (O5) hold as whole words only
     ([G43, X1], [G43, TE, X1]),
     ([G1, X1], [G1, TE, X1]),
