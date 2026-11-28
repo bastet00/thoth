@@ -690,7 +690,9 @@ AUTOMATIC = [
     # control, and a block that reaches a sign before a control is not formed
     ([R4, V, X1, Q3], [R4, V, X1, Q3]),
     ([F35, I9, D21, V, N35], [F35, I9, D21, V, N35]),
-    ([R4, X1, Q3, H, Z1], [R4, X1, Q3, H, Z1]),
+    # ḥtp is a whole word, so before a control the shape rule reads it: R4
+    # over X1 (both half-block, rule A7 at 13 half units), Q3 joined to Z1 as typed
+    ([R4, X1, Q3, H, Z1], [R4, V, X1, Q3, H, Z1]),
     ([F35, I9, V, D21, SPACE, R4, X1, Q3], [F35, I9, V, D21, SPACE, R4, V, X1, H, Q3]),
     # a word typed right after a group, with no space, does not begin a word:
     # rn (a whole word only) is not taken from the list there, but its two
@@ -716,9 +718,9 @@ AUTOMATIC = [
     ([G17, X1], [G17, TE, X1]),
     ([G39, Z1], [G39, TE, Z1]),
     ([D21, G43, X1], [D21, G43, X1]),
-    ([G1, X1, N35], [G1, X1, N35]),
+    ([G1, X1, N35], [G1, X1, V, N35]),  # no bird word: t over n by shape (rule A7 at 13)
     ([G17, X1, SPACE, G39, Z1, D21], [G17, TE, X1, SPACE, G39, Z1, D21]),
-    ([G14, TE, X1, D21, N35], [G14, TE, X1, D21, N35]),
+    ([G14, TE, X1, D21, N35], [G14, TE, X1, D21, V, N35]),  # X1 after a control starts no block, D21 does
     # the shape rule (A7 to A9): two half-block signs in a row, one above the
     # other. The owner's two cases: O34 I9 D19 A2 is the bolt over the viper,
     # then the nose and the man; the dictionary word of his screenshot, O34
@@ -730,20 +732,24 @@ AUTOMATIC = [
     ([N35, N35], [N35, V, N35]),  # a sign doubled is a pair like any other
     ([N35, N35, N35], [N35, V, N35, N35]),  # tripled: a pair and a lone sign
     ([Z2, D21], [Z2, V, D21]),  # the plural strokes are wide: a half-block sign
+    # the owner, 2026-11-28: the bread t, the two strokes and the cup (13 half
+    # units wide) are half-block too: t over n, two strokes over t
+    ([X1, N35], [X1, V, N35]), ([Z4, X1], [Z4, V, X1]),
     ([A1, O34, I9, A1], [A1, O34, V, I9, A1]),  # between tall signs
     # not half-block: narrow low signs, low and tall, two tall wide signs
-    ([X1, Z1], [X1, Z1]), ([Q3, X1], [Q3, X1]), ([Z4, X1], [Z4, X1]),
+    ([X1, Z1], [X1, Z1]), ([Q3, X1], [Q3, X1]),
     ([D21, A1], [D21, A1]), ([A1, D21], [A1, D21]), ([G43, G43], [G43, G43]),
-    ([X1, N35], [X1, N35]), ([AA1, D21], [AA1, D21]),
+    ([AA1, D21], [AA1, D21]),
     # a run right after a lower sign that is not taken stays as it is (p over n)
     ([Q3, N35, D36], [Q3, N35, D36]),
-    ([X1, O34, I9, N37], [X1, O34, I9, N37]),
+    ([X1, O34, I9, N37], [X1, V, O34, I9, V, N37]),  # X1 is half-block itself: two pairs
     ([D19, O34, I9], [D19, O34, I9]),
     ([A2, O34, I9], [A2, O34, V, I9]),  # after a full-height sign it stacks
     # the word list wins: its entries take their signs first (ḥtp, nfr, the
     # owner's ḥjmt), also where they keep two half-block signs apart
     ([R4, X1, Q3, SPACE, O34, I9], [R4, V, X1, H, Q3, SPACE, O34, V, I9]),
-    ([R4, X1, Q3, O34, I9], [R4, X1, Q3, O34, I9]),  # ḥtp is a whole word; after Q3 the run stays
+    # ḥtp is a whole word: R4 over X1 by shape; after Q3 the run stays
+    ([R4, X1, Q3, O34, I9], [R4, V, X1, Q3, O34, I9]),
     ([F35, I9, D21, N35, SPACE, N35, N35], [F35, I9, V, D21, N35, SPACE, N35, V, N35]),
     ([N41, X1, B1], [N41, V, X1, B1]),
     # the owner, 2026-11-25: ḥtp keeps its p in the block inside a name too
@@ -821,7 +827,7 @@ def test_automatic(signs):
     check(found == [(1324, [(O34, 2, 748, 0, 0.973), (I9, 7, 108, 0, 0.872)]), (794, [(D19, 0, 0, 0, 1.0)]),
                     (859, [(A2, 0, 0, 0, 1.0)])], f"O34 I9 D19 A2: {found}")
     half = [c for c in sorted(signs) if L.half_block(c, signs)]
-    check(len(half) == 157 and all(c in L.HIEROGLYPHS and signs[c].cell[1] <= 6 and signs[c].cell[0] >= 14
+    check(len(half) == 160 and {X1, Z4, 0x133BA} <= set(half) and all(c in L.HIEROGLYPHS and signs[c].cell[1] <= 6 and signs[c].cell[0] >= 13
                                    for c in half), f"{len(half)} half-block signs")
     check(all(L.fit_level(*L.measure(((a,), (b,)), signs)[:2]) == 0 for a in half[::7] for b in half[::5]),
           "a pair of half-block signs is not at level 0")

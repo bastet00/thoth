@@ -866,10 +866,11 @@ def _inserted(start, end, run, signs):
 #
 # A7. A half-block sign is a hieroglyph whose cell (rule 2) is at most half
 #     the quadrat high (LOW_HEIGHT units: the low signs of rule 1) and at
-#     least half of it wide (WIDTH_LIMIT / 2 half units): it fills the
-#     width of a block and leaves half of its height free. Two of them fill
-#     a block at full size (level 0). Blanks and lost signs are not
-#     hieroglyphs and never count.
+#     least 13 half units wide (HALF_WIDTH, just under half the quadrat), so
+#     that the bread t, the two strokes and the cup (X1, Z4, W10, all 13
+#     half units wide) join: it fills about the width of a block and leaves
+#     half of its height free. Two of them fill a block at full size
+#     (level 0). Blanks and lost signs are not hieroglyphs and never count.
 # A8. After the table (A4), the half-block signs of a stretch that no entry
 #     took and that stand in a row form runs. A run right after a sign that
 #     is lower than the quadrat (cell under HEIGHT_LIMIT units), not
@@ -889,9 +890,15 @@ def _inserted(start, end, run, signs):
 # Why these choices (measured on dictionary words typed plainly, a check
 # that is not part of the font): pairs of two signs that are both low and
 # at least half the quadrat wide are written one above the other about
-# three times in four; narrower low signs (the bread, the stroke) only
-# about half the time, and a width limit of 16 to 26 half units, or a
-# height limit of 5 units, gives no better precision and fewer stacks.
+# three times in four; a width limit of 16 to 26 half units, or a height
+# limit of 5 units, gives no better precision and fewer stacks. The limit
+# was 14 half units (half the quadrat) until the owner, 2026-11-28, lowered
+# it to 13: t above n, t above r, the two strokes above r, n, d or ꜥ above
+# t are correct stacks, and where the words differ they group three signs.
+# On 7,902 spellings that takes the stacks from 1,909 (79.2 % exact) to
+# 3,193 (73.0 %, 820 more exact ones) and loses no correct stack; the new
+# differences are mostly a pair inside a group of three. Narrower low signs
+# (the stroke, 4 half units) stay out.
 # Leaving a run after a lower sign apart takes away most of the wrong
 # stacks across two blocks (a small sign over the first sign of the run)
 # for a sixth of the stacks. Three in a row are a pair and a lone sign
@@ -977,7 +984,7 @@ def check_table(table, signs):
 
 
 HALF_HEIGHT = LOW_HEIGHT  # units: a half-block sign is at most this high (rule A7)
-HALF_WIDTH = WIDTH_LIMIT // 2  # half units: and at least this wide
+HALF_WIDTH = 13  # half units: and at least this wide, just under WIDTH_LIMIT / 2 so that X1, Z4 and W10 join (the owner, 2026-11-28)
 SOURCE = Path(__file__).resolve().parents[2] / "sources" / "Thoth-Regular.ufo"
 _signs = []
 
@@ -991,7 +998,7 @@ def default_signs():
 
 
 def half_block(codepoint, signs):
-    """Rule A7: a sign at most half the quadrat high and at least half of it wide."""
+    """Rule A7: a sign at most half the quadrat high and at least HALF_WIDTH half units wide."""
     sign = signs.get(codepoint)
     return (sign is not None and codepoint in HIEROGLYPHS
             and sign.cell[1] <= HALF_HEIGHT and sign.cell[0] >= HALF_WIDTH)
