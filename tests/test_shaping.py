@@ -753,6 +753,9 @@ def test_automatic(shaper):
               # the owner, 2026-11-28: t, the two strokes and the cup are half-block
               ("X1-N35", "X1:N35"), ("X1-D21", "X1:D21"), ("Z4-D21", "Z4:D21"),
               ("X1-O34-I9-N37", "X1:O34-I9:N37"),
+              # and the stool p and the jar stand g, by name (the owner, 2026-11-28)
+              ("Q3-X1", "Q3:X1"), ("Q3-N35-D36", "Q3:N35-D36"), ("Q3-D21-N35", "Q3:D21-N35"),
+              ("W11-D21", "W11:D21"), ("D46-W11", "D46:W11"),
               # words of the list typed together (rule A2): the owner's nfr ꜥnḫ
               ("F35-I9-D21-S34-N35-Aa1", "F35-I9:D21-S34-N35:Aa1"))
     for plain, explicit in golden:
@@ -766,7 +769,7 @@ def test_automatic(shaper):
         check(all(g in shaper.lone for g in drawn[-2:]), f"{label(text)}: ZWNJ or space joined {drawn}")
     # pairs that do not stack by shape: narrow low, low and tall, tall and
     # wide, a run right after a lower sign
-    for plain in ("X1-Z1", "Q3-X1", "D21-A1", "G43-G43", "Q3-N35-D36", "Q3-D21-N35", "Z1-O34-I9-N37"):
+    for plain in ("X1-Z1", "D21-A1", "G43-G43", "Z1-N35-D21", "Z1-O34-I9-N37"):
         drawn = [g[0] for g in shaper.shape(encode(plain)) if shaper.drawn(g[0])]
         check(len(drawn) == len(encode(plain)) and all(g in shaper.lone for g in drawn), f"{plain}: stacked {drawn}")
     # the feature switched off: no automatic stacking at all

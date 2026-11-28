@@ -670,6 +670,7 @@ S34, ZWNJ, ZWJ, SPACE = 0x132F9, 0x200C, 0x200D, 0x20
 O34, D19, A2, AA1, G43 = 0x13283, 0x13089, 0x13001, 0x1340D, 0x13171  # bolt, nose, man, placenta, quail chick
 N37, Y1, V31, F32, D46, A17 = 0x13219, 0x133DB, 0x133A1, 0x13121, 0x130A7, 0x13014
 D36, N41 = 0x1309D, 0x1321E  # arm, well
+W11 = 0x133BC  # jar stand
 
 # Plain text, and the text with controls that it must lay out as.
 AUTOMATIC = [
@@ -735,21 +736,26 @@ AUTOMATIC = [
     # the owner, 2026-11-28: the bread t, the two strokes and the cup (13 half
     # units wide) are half-block too: t over n, two strokes over t
     ([X1, N35], [X1, V, N35]), ([Z4, X1], [Z4, V, X1]),
+    # and so are the stool p and the jar stand g, by name (the owner,
+    # 2026-11-28): p over t, p over r and then n, g over r, d over g
+    ([Q3, X1], [Q3, V, X1]), ([Q3, D21, N35], [Q3, V, D21, N35]),
+    ([W11, D21], [W11, V, D21]), ([D46, W11], [D46, V, W11]),
     ([A1, O34, I9, A1], [A1, O34, V, I9, A1]),  # between tall signs
     # not half-block: narrow low signs, low and tall, two tall wide signs
-    ([X1, Z1], [X1, Z1]), ([Q3, X1], [Q3, X1]),
+    ([X1, Z1], [X1, Z1]),
     ([D21, A1], [D21, A1]), ([A1, D21], [A1, D21]), ([G43, G43], [G43, G43]),
     ([AA1, D21], [AA1, D21]),
-    # a run right after a lower sign that is not taken stays as it is (p over n)
-    ([Q3, N35, D36], [Q3, N35, D36]),
+    # a run right after a lower sign that is not taken stays as it is
+    ([Z1, N35, D21], [Z1, N35, D21]),
+    ([Q3, N35, D36], [Q3, V, N35, D36]),  # p is half-block itself: p over n
     ([X1, O34, I9, N37], [X1, V, O34, I9, V, N37]),  # X1 is half-block itself: two pairs
     ([D19, O34, I9], [D19, O34, I9]),
     ([A2, O34, I9], [A2, O34, V, I9]),  # after a full-height sign it stacks
     # the word list wins: its entries take their signs first (ḥtp, nfr, the
     # owner's ḥjmt), also where they keep two half-block signs apart
     ([R4, X1, Q3, SPACE, O34, I9], [R4, V, X1, H, Q3, SPACE, O34, V, I9]),
-    # ḥtp is a whole word: R4 over X1 by shape; after Q3 the run stays
-    ([R4, X1, Q3, O34, I9], [R4, V, X1, Q3, O34, I9]),
+    # ḥtp is a whole word: R4 over X1 by shape, then Q3 over O34 (both half-block)
+    ([R4, X1, Q3, O34, I9], [R4, V, X1, Q3, V, O34, I9]),
     ([F35, I9, D21, N35, SPACE, N35, N35], [F35, I9, V, D21, N35, SPACE, N35, V, N35]),
     ([N41, X1, B1], [N41, V, X1, B1]),
     # the owner, 2026-11-25: ḥtp keeps its p in the block inside a name too
@@ -827,8 +833,9 @@ def test_automatic(signs):
     check(found == [(1324, [(O34, 2, 748, 0, 0.973), (I9, 7, 108, 0, 0.872)]), (794, [(D19, 0, 0, 0, 1.0)]),
                     (859, [(A2, 0, 0, 0, 1.0)])], f"O34 I9 D19 A2: {found}")
     half = [c for c in sorted(signs) if L.half_block(c, signs)]
-    check(len(half) == 160 and {X1, Z4, 0x133BA} <= set(half) and all(c in L.HIEROGLYPHS and signs[c].cell[1] <= 6 and signs[c].cell[0] >= 13
-                                   for c in half), f"{len(half)} half-block signs")
+    check(len(half) == 162 and {X1, Z4, 0x133BA, Q3, W11} <= set(half)
+          and all(c in L.HIEROGLYPHS and (c in (Q3, W11) or signs[c].cell[1] <= 6 and signs[c].cell[0] >= 13)
+                  for c in half), f"{len(half)} half-block signs")
     check(all(L.fit_level(*L.measure(((a,), (b,)), signs)[:2]) == 0 for a in half[::7] for b in half[::5]),
           "a pair of half-block signs is not at level 0")
     lower = [c for c in sorted(signs) if c not in half and signs[c].cell[1] < L.HEIGHT_LIMIT]

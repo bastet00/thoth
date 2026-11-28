@@ -869,7 +869,9 @@ def _inserted(start, end, run, signs):
 #     least 13 half units wide (HALF_WIDTH, just under half the quadrat), so
 #     that the bread t, the two strokes and the cup (X1, Z4, W10, all 13
 #     half units wide) join: it fills about the width of a block and leaves
-#     half of its height free. Two of them fill a block at full size
+#     half of its height free. Two narrower low signs count too, as named
+#     exceptions (HALF_BLOCK_EXCEPTIONS): the jar stand g (W11, 12 half
+#     units) and the stool p (Q3, 8). Two of them fill a block at full size
 #     (level 0). Blanks and lost signs are not hieroglyphs and never count.
 # A8. After the table (A4), the half-block signs of a stretch that no entry
 #     took and that stand in a row form runs. A run right after a sign that
@@ -897,8 +899,12 @@ def _inserted(start, end, run, signs):
 # t are correct stacks, and where the words differ they group three signs.
 # On 7,902 spellings that takes the stacks from 1,909 (79.2 % exact) to
 # 3,193 (73.0 %, 820 more exact ones) and loses no correct stack; the new
-# differences are mostly a pair inside a group of three. Narrower low signs
-# (the stroke, 4 half units) stay out.
+# differences are mostly a pair inside a group of three. The owner,
+# 2026-11-28, added g (W11) and p (Q3) by name: p above n or t, g above r
+# and d above g are usual stacks; with them 3,680 stacks, 2,673 exact
+# (72.6 %, 341 more), and of the 434 pairs with p or g 307 are exact (71 %),
+# the rest mostly pt that the words write as one group of three. Other
+# narrower low signs (the stroke, 4 half units) stay out.
 # Leaving a run after a lower sign apart takes away most of the wrong
 # stacks across two blocks (a small sign over the first sign of the run)
 # for a sixth of the stacks. Three in a row are a pair and a lone sign
@@ -985,6 +991,7 @@ def check_table(table, signs):
 
 HALF_HEIGHT = LOW_HEIGHT  # units: a half-block sign is at most this high (rule A7)
 HALF_WIDTH = 13  # half units: and at least this wide, just under WIDTH_LIMIT / 2 so that X1, Z4 and W10 join (the owner, 2026-11-28)
+HALF_BLOCK_EXCEPTIONS = {0x133BC, 0x132AA}  # W11 g, Q3 p: narrower, half-block all the same (the owner, 2026-11-28)
 SOURCE = Path(__file__).resolve().parents[2] / "sources" / "Thoth-Regular.ufo"
 _signs = []
 
@@ -998,10 +1005,12 @@ def default_signs():
 
 
 def half_block(codepoint, signs):
-    """Rule A7: a sign at most half the quadrat high and at least HALF_WIDTH half units wide."""
+    """Rule A7: a sign at most half the quadrat high and at least HALF_WIDTH
+    half units wide, or one of HALF_BLOCK_EXCEPTIONS."""
     sign = signs.get(codepoint)
-    return (sign is not None and codepoint in HIEROGLYPHS
-            and sign.cell[1] <= HALF_HEIGHT and sign.cell[0] >= HALF_WIDTH)
+    if sign is None or codepoint not in HIEROGLYPHS:
+        return False
+    return codepoint in HALF_BLOCK_EXCEPTIONS or (sign.cell[1] <= HALF_HEIGHT and sign.cell[0] >= HALF_WIDTH)
 
 
 def shape_blocks(codepoints, start, end, free, signs, bound_start=False):
