@@ -869,10 +869,16 @@ def _inserted(start, end, run, signs):
 #     least 13 half units wide (HALF_WIDTH, just under half the quadrat), so
 #     that the bread t, the two strokes and the cup (X1, Z4, W10, all 13
 #     half units wide) join: it fills about the width of a block and leaves
-#     half of its height free. Two narrower low signs count too, as named
+#     half of its height free. Three narrower low signs count too, as named
 #     exceptions (HALF_BLOCK_EXCEPTIONS): the jar stand g (W11, 12 half
-#     units) and the stool p (Q3, 8). Two of them fill a block at full size
-#     (level 0). Blanks and lost signs are not hieroglyphs and never count.
+#     units), the stool p (Q3, 8) and the single stroke (Z1, 4), which
+#     stands above or below a sign like any half-block one. Nine number
+#     signs that are low and wide enough never count, as named exclusions
+#     (HALF_BLOCK_EXCLUSIONS): 500 (V1I), 20, 30, 40, 50 (V20I to V20L),
+#     5 (Z15I, Z16D), 6 (Z16E) and 9 (Z16H); numbers are written side by
+#     side, the higher value first, not stacked. Two half-block signs fill
+#     a block at full size (level 0). Blanks and lost signs are not
+#     hieroglyphs and never count.
 # A8. After the table (A4), the half-block signs of a stretch that no entry
 #     took and that stand in a row form runs. A run right after a sign that
 #     is lower than the quadrat (cell under HEIGHT_LIMIT units), not
@@ -903,8 +909,14 @@ def _inserted(start, end, run, signs):
 # 2026-11-28, added g (W11) and p (Q3) by name: p above n or t, g above r
 # and d above g are usual stacks; with them 3,680 stacks, 2,673 exact
 # (72.6 %, 341 more), and of the 434 pairs with p or g 307 are exact (71 %),
-# the rest mostly pt that the words write as one group of three. Other
-# narrower low signs (the stroke, 4 half units) stay out.
+# the rest mostly pt that the words write as one group of three. The
+# owner, 2026-11-28, then added the single stroke (Z1) by name: 4,475
+# stacks, 2,850 exact (63.7 %), and the wrong stacks across two blocks
+# from 420 to 938. Of the 715 pairs with the stroke 149 are as the words
+# have them; the words often write r and the stroke side by side, or the
+# stroke closing the sign before. The owner chose it with these numbers.
+# The number signs are left out by name (the owner, 2026-11-28); that
+# changes nothing on the words.
 # Leaving a run after a lower sign apart takes away most of the wrong
 # stacks across two blocks (a small sign over the first sign of the run)
 # for a sixth of the stacks. Three in a row are a pair and a lone sign
@@ -991,7 +1003,25 @@ def check_table(table, signs):
 
 HALF_HEIGHT = LOW_HEIGHT  # units: a half-block sign is at most this high (rule A7)
 HALF_WIDTH = 13  # half units: and at least this wide, just under WIDTH_LIMIT / 2 so that X1, Z4 and W10 join (the owner, 2026-11-28)
-HALF_BLOCK_EXCEPTIONS = {0x133BC, 0x132AA}  # W11 g, Q3 p: narrower, half-block all the same (the owner, 2026-11-28)
+# Rule A7, by name (the owner, 2026-11-28): narrower low signs that are
+# half-block all the same, and number signs that are low and wide enough
+# but are never half-block (numbers stand side by side, higher value first).
+HALF_BLOCK_EXCEPTIONS = {
+    0x133BC,  # W11 g, the jar stand (12 half units)
+    0x132AA,  # Q3 p, the stool (8 half units)
+    0x133E4,  # Z1, the single stroke (4 half units)
+}
+HALF_BLOCK_EXCLUSIONS = {
+    0x1336B,  # V1I, 500
+    0x1338F,  # V20I, 20
+    0x13390,  # V20J, 30
+    0x13391,  # V20K, 40
+    0x13392,  # V20L, 50
+    0x13403,  # Z15I, 5
+    0x13408,  # Z16D, 5
+    0x13409,  # Z16E, 6
+    0x1340C,  # Z16H, 9
+}
 SOURCE = Path(__file__).resolve().parents[2] / "sources" / "Thoth-Regular.ufo"
 _signs = []
 
@@ -1006,9 +1036,10 @@ def default_signs():
 
 def half_block(codepoint, signs):
     """Rule A7: a sign at most half the quadrat high and at least HALF_WIDTH
-    half units wide, or one of HALF_BLOCK_EXCEPTIONS."""
+    half units wide, or one of HALF_BLOCK_EXCEPTIONS; never one of
+    HALF_BLOCK_EXCLUSIONS."""
     sign = signs.get(codepoint)
-    if sign is None or codepoint not in HIEROGLYPHS:
+    if sign is None or codepoint not in HIEROGLYPHS or codepoint in HALF_BLOCK_EXCLUSIONS:
         return False
     return codepoint in HALF_BLOCK_EXCEPTIONS or (sign.cell[1] <= HALF_HEIGHT and sign.cell[0] >= HALF_WIDTH)
 

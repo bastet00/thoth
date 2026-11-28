@@ -747,8 +747,9 @@ def test_automatic(shaper):
     # golden plain words: the glyphs that draw, as for the same words typed with controls
     golden = (("R4-X1-Q3", "R4:X1*Q3"), ("F35-I9-D21", "F35-I9:D21"), ("D21-N35", "D21:N35"),
               ("S34-N35-Aa1", "S34-N35:Aa1"), ("G14-X1-B1", "G14<13434>X1-B1"),  # mwt: t in the corner
-              # the owner's cases (shape rule): bolt over viper, the rest as it is
-              ("O34-I9-D19-A2", "O34:I9-D19-A2"), ("O34-I9-Aa1-G43" + "-Z1" * 7, "O34:I9-Aa1-G43" + "-Z1" * 7),
+              # the owner's cases (shape rule): bolt over viper, the rest as it is;
+              # since the stroke is half-block the strokes stack two by two
+              ("O34-I9-D19-A2", "O34:I9-D19-A2"), ("O34-I9-Aa1-G43" + "-Z1" * 7, "O34:I9-Aa1-G43" + "-Z1:Z1" * 3 + "-Z1"),
               ("N35-N35", "N35:N35"), ("O34-I9-N37-Y1", "O34:I9-N37:Y1"),
               # the owner, 2026-11-28: t, the two strokes and the cup are half-block
               ("X1-N35", "X1:N35"), ("X1-D21", "X1:D21"), ("Z4-D21", "Z4:D21"),
@@ -756,6 +757,8 @@ def test_automatic(shaper):
               # and the stool p and the jar stand g, by name (the owner, 2026-11-28)
               ("Q3-X1", "Q3:X1"), ("Q3-N35-D36", "Q3:N35-D36"), ("Q3-D21-N35", "Q3:D21-N35"),
               ("W11-D21", "W11:D21"), ("D46-W11", "D46:W11"),
+              # and the single stroke, by name (the owner, 2026-11-28)
+              ("D21-Z1", "D21:Z1"), ("Z1-N35", "Z1:N35"), ("X1-Z1", "X1:Z1"), ("Z1-N35-D21", "Z1:N35-D21"),
               # words of the list typed together (rule A2): the owner's nfr ꜥnḫ
               ("F35-I9-D21-S34-N35-Aa1", "F35-I9:D21-S34-N35:Aa1"))
     for plain, explicit in golden:
@@ -768,8 +771,8 @@ def test_automatic(shaper):
         drawn = [g[0] for g in shaper.shape(text) if shaper.drawn(g[0])]
         check(all(g in shaper.lone for g in drawn[-2:]), f"{label(text)}: ZWNJ or space joined {drawn}")
     # pairs that do not stack by shape: narrow low, low and tall, tall and
-    # wide, a run right after a lower sign
-    for plain in ("X1-Z1", "D21-A1", "G43-G43", "Z1-N35-D21", "Z1-O34-I9-N37"):
+    # wide, a run right after a lower sign, number signs (the owner, 2026-11-28)
+    for plain in ("X1-W24", "D21-A1", "G43-G43", "W24-N35-D21", "W24-O34-I9-N37", "V1I-V20I", "V20I-Z16H"):
         drawn = [g[0] for g in shaper.shape(encode(plain)) if shaper.drawn(g[0])]
         check(len(drawn) == len(encode(plain)) and all(g in shaper.lone for g in drawn), f"{plain}: stacked {drawn}")
     # the feature switched off: no automatic stacking at all

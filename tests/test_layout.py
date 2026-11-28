@@ -671,6 +671,7 @@ O34, D19, A2, AA1, G43 = 0x13283, 0x13089, 0x13001, 0x1340D, 0x13171  # bolt, no
 N37, Y1, V31, F32, D46, A17 = 0x13219, 0x133DB, 0x133A1, 0x13121, 0x130A7, 0x13014
 D36, N41 = 0x1309D, 0x1321E  # arm, well
 W11 = 0x133BC  # jar stand
+V1I, V20I, Z16H = 0x1336B, 0x1338F, 0x1340C  # 500, 20, 9
 
 # Plain text, and the text with controls that it must lay out as.
 AUTOMATIC = [
@@ -720,14 +721,16 @@ AUTOMATIC = [
     ([G39, Z1], [G39, TE, Z1]),
     ([D21, G43, X1], [D21, G43, X1]),
     ([G1, X1, N35], [G1, X1, V, N35]),  # no bird word: t over n by shape (rule A7 at 13)
-    ([G17, X1, SPACE, G39, Z1, D21], [G17, TE, X1, SPACE, G39, Z1, D21]),
+    # no bird word: the stroke over r by shape (the stroke is half-block, the owner, 2026-11-28)
+    ([G17, X1, SPACE, G39, Z1, D21], [G17, TE, X1, SPACE, G39, Z1, V, D21]),
     ([G14, TE, X1, D21, N35], [G14, TE, X1, D21, V, N35]),  # X1 after a control starts no block, D21 does
     # the shape rule (A7 to A9): two half-block signs in a row, one above the
     # other. The owner's two cases: O34 I9 D19 A2 is the bolt over the viper,
     # then the nose and the man; the dictionary word of his screenshot, O34
-    # I9 Aa1 G43 and seven strokes, the same pair and the rest as it is
+    # I9 Aa1 G43 and seven strokes, the same pair; since the stroke is
+    # half-block (the owner, 2026-11-28) the strokes stack two by two
     ([O34, I9, D19, A2], [O34, V, I9, D19, A2]),
-    ([O34, I9, AA1, G43, *[Z1] * 7], [O34, V, I9, AA1, G43, *[Z1] * 7]),
+    ([O34, I9, AA1, G43, *[Z1] * 7], [O34, V, I9, AA1, G43, Z1, V, Z1, Z1, V, Z1, Z1, V, Z1, Z1]),
     ([O34, I9, N37], [O34, V, I9, N37]),  # three: a pair and a lone sign
     ([O34, I9, N37, Y1], [O34, V, I9, N37, V, Y1]),  # four: two pairs
     ([N35, N35], [N35, V, N35]),  # a sign doubled is a pair like any other
@@ -740,13 +743,17 @@ AUTOMATIC = [
     # 2026-11-28): p over t, p over r and then n, g over r, d over g
     ([Q3, X1], [Q3, V, X1]), ([Q3, D21, N35], [Q3, V, D21, N35]),
     ([W11, D21], [W11, V, D21]), ([D46, W11], [D46, V, W11]),
+    # and the single stroke, by name (the owner, 2026-11-28): t over the stroke
+    ([X1, Z1], [X1, V, Z1]),
     ([A1, O34, I9, A1], [A1, O34, V, I9, A1]),  # between tall signs
     # not half-block: narrow low signs, low and tall, two tall wide signs
-    ([X1, Z1], [X1, Z1]),
+    ([X1, W24], [X1, W24]),
+    # number signs are never half-block (the owner, 2026-11-28): 500 20, 20 9 stay a row
+    ([V1I, V20I], [V1I, V20I]), ([V20I, Z16H], [V20I, Z16H]),
     ([D21, A1], [D21, A1]), ([A1, D21], [A1, D21]), ([G43, G43], [G43, G43]),
     ([AA1, D21], [AA1, D21]),
     # a run right after a lower sign that is not taken stays as it is
-    ([Z1, N35, D21], [Z1, N35, D21]),
+    ([W24, N35, D21], [W24, N35, D21]),
     ([Q3, N35, D36], [Q3, V, N35, D36]),  # p is half-block itself: p over n
     ([X1, O34, I9, N37], [X1, V, O34, I9, V, N37]),  # X1 is half-block itself: two pairs
     ([D19, O34, I9], [D19, O34, I9]),
@@ -833,8 +840,9 @@ def test_automatic(signs):
     check(found == [(1324, [(O34, 2, 748, 0, 0.973), (I9, 7, 108, 0, 0.872)]), (794, [(D19, 0, 0, 0, 1.0)]),
                     (859, [(A2, 0, 0, 0, 1.0)])], f"O34 I9 D19 A2: {found}")
     half = [c for c in sorted(signs) if L.half_block(c, signs)]
-    check(len(half) == 162 and {X1, Z4, 0x133BA, Q3, W11} <= set(half)
-          and all(c in L.HIEROGLYPHS and (c in (Q3, W11) or signs[c].cell[1] <= 6 and signs[c].cell[0] >= 13)
+    check(len(half) == 154 and {X1, Z4, 0x133BA, Q3, W11, Z1} <= set(half)
+          and not set(half) & L.HALF_BLOCK_EXCLUSIONS and len(L.HALF_BLOCK_EXCLUSIONS) == 9
+          and all(c in L.HIEROGLYPHS and (c in (Q3, W11, Z1) or signs[c].cell[1] <= 6 and signs[c].cell[0] >= 13)
                   for c in half), f"{len(half)} half-block signs")
     check(all(L.fit_level(*L.measure(((a,), (b,)), signs)[:2]) == 0 for a in half[::7] for b in half[::5]),
           "a pair of half-block signs is not at level 0")
